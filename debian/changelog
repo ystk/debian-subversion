@@ -1,3 +1,21 @@
+subversion (1.6.12dfsg-6) stable-security; urgency=high
+
+  [ Michael Diers ]
+  * patches/cve-2011-1752: New patch for CVE-2011-1752, fixing a remotely
+    triggered crash in mod_dav_svn, delivering baselined WebDAV resources.
+  * patches/cve-2011-1783: New patch for CVE-2011-1783 and CVE-2011-1921,
+    fixing remotely triggered memory exhaustion and a content leak of
+    files that are meant to be unreadable.
+
+ -- Peter Samuelson <peter@p12n.org>  Tue, 31 May 2011 11:00:32 -0500
+
+subversion (1.6.12dfsg-5) stable-security; urgency=high
+
+  * patches/cve-2011-0715: New patch for CVE-2011-0715, fixing a remotely
+    triggered crash in mod_dav_svn involving lock tokens.
+
+ -- Peter Samuelson <peter@p12n.org>  Fri, 25 Feb 2011 09:53:32 -0600
+
 subversion (1.6.12dfsg-4) unstable; urgency=high
 
   * patches/loosen-sqlite-version-check: New patch: Relax the SQLite

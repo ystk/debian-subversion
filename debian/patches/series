@@ -27,3 +27,6 @@ server-memleaks
 no-wc1.7-check
 loosen-sqlite-version-check
 cve-2010-4539
+cve-2011-0715
+cve-2011-1752
+cve-2011-1783
