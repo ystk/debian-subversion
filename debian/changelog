@@ -1,3 +1,14 @@
+subversion (1.6.12dfsg-7) squeeze-security; urgency=high
+
+  * Non-maintainer upload by the Security Team.
+  * Add CVE-2013-1968.patch patch.
+    CVE-2013-1968: Subversion FSFS repositories can be corrupted by newline
+    characters in filenames. (Closes: #711033)
+  * Add CVE-2013-2112.patch patch.
+    CVE-2013-2112: Fix remotely triggerable DoS vulnerability. (Closes: #711033)
+
+ -- Salvatore Bonaccorso <carnil@debian.org>  Thu, 06 Jun 2013 09:06:48 +0200
+
 subversion (1.6.12dfsg-6) stable-security; urgency=high
 
   [ Michael Diers ]
