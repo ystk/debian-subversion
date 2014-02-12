@@ -1,4 +1,4 @@
-This tarball is the same as official subversion-1.6.12.tar.gz,
+This tarball is the same as official subversion-1.6.17.tar.gz,
 except that several unlicensed or unclearly-licensed files were
 removed:
 
@@ -12,4 +12,4 @@ removed:
   contrib/server-side/backup-recipe.sh
   contrib/server-side/load_repo_with_mergesensitive_copy.sh
 
-Peter Samuelson, 18 Jun 2010
+Peter Samuelson,  1 Jun 2011

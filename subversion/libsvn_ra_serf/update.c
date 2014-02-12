@@ -211,6 +211,9 @@ typedef struct report_info_t
   svn_txdelta_window_handler_t textdelta;
   void *textdelta_baton;
 
+  /* Checksum for close_file */
+  const char *final_checksum;
+
   /* temporary property for this file which is currently being parsed
    * It will eventually be stored in our parent directory's property hash.
    */
@@ -429,6 +432,12 @@ set_file_props(void *baton,
 {
   report_info_t *info = baton;
   const svn_delta_editor_t *editor = info->dir->update_editor;
+
+  if (name_len == 12
+      && ns_len == 39
+      && strcmp(name, "md5-checksum") == 0
+      && strcmp(ns, SVN_DAV_PROP_NS_DAV) == 0)
+    info->final_checksum = apr_pstrdup(info->pool, val->data);
 
   return svn_ra_serf__set_baton_props(editor->change_file_prop,
                                       info->file_baton,
@@ -928,7 +937,8 @@ handle_fetch(serf_request_t *request,
                                           info, info->editor_pool);
             }
 
-          err = info->dir->update_editor->close_file(info->file_baton, NULL,
+          err = info->dir->update_editor->close_file(info->file_baton,
+                                                     info->final_checksum,
                                                      info->editor_pool);
 
           if (err)
@@ -1099,7 +1109,8 @@ handle_propchange_only(report_info_t *info)
                                   set_file_props, info, info->editor_pool);
     }
 
-  SVN_ERR(info->dir->update_editor->close_file(info->file_baton, NULL,
+  SVN_ERR(info->dir->update_editor->close_file(info->file_baton,
+                                               info->final_checksum,
                                                info->editor_pool));
 
   /* We're done with our pools. */
@@ -1622,7 +1633,8 @@ start_report(svn_ra_serf__xml_parser_t *parser,
     }
   else if (state == IGNORE_PROP_NAME)
     {
-      push_state(parser, ctx, PROP);
+      report_info_t *info = push_state(parser, ctx, PROP);
+      info->prop_encoding = svn_xml_get_attr_value("encoding", attrs);
     }
   else if (state == NEED_PROP_NAME)
     {
@@ -1632,6 +1644,7 @@ start_report(svn_ra_serf__xml_parser_t *parser,
 
       info->prop_ns = name.namespace;
       info->prop_name = apr_pstrdup(parser->state->pool, name.name);
+      info->prop_encoding = svn_xml_get_attr_value("encoding", attrs);
       info->prop_val = NULL;
       info->prop_val_len = 0;
     }

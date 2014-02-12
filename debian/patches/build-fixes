@@ -1,6 +1,6 @@
 --- a/build/generator/swig/checkout_swig_header.py
 +++ b/build/generator/swig/checkout_swig_header.py
-@@ -20,15 +20,14 @@
+@@ -20,15 +20,14 @@ class Generator(generator.swig.Generator
  
    def write_makefile_rules(self, makefile):
      """Write makefile rules to checkout files"""
@@ -22,7 +22,7 @@
                     % " ".join(checkout_locations))
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -249,14 +249,14 @@
+@@ -249,14 +249,14 @@ INSTALL_EXTRA_SWIG_PY=\
  
  # The path to generated and complementary source files for the SWIG
  # bindings.
@@ -42,7 +42,7 @@
  
  ### Automate JAR creation using Makefile generator's javahl-java.jar
  ### property.  Enhance generator to support JAR installation.
-@@ -532,6 +532,7 @@
+@@ -537,6 +537,7 @@ doc: doc-misc-docs doc-api doc-javahl
  # Generate API documentation for the C libraries.
  ### This could also generate POD for swig-perl, etc.
  doc-api:
@@ -50,16 +50,7 @@
  	( cd $(top_srcdir) && \
  	  sed "s,\(OUTPUT_DIRECTORY *= *\),\1$(abs_builddir)/," \
  	  doc/doxygen.conf | doxygen - )
-@@ -682,7 +683,7 @@
- swig-pl_DEPS = autogen-swig-pl libsvn_swig_perl \
-   $(SWIG_PL_DIR)/native/Makefile
- swig-pl: $(swig-pl_DEPS)
--	if test "$(SWIG_PL_DIR)" != "$(SWIG_PL_SRC_DIR)"; then \
-+	if test "$$(cd $(SWIG_PL_DIR);pwd)" != "$(SWIG_PL_SRC_DIR)"; then \
- 	  ln -sf $(SWIG_PL_SRC_DIR)/native/*.c $(SWIG_PL_DIR)/native; \
- 	fi
- 	cd $(SWIG_PL_DIR)/native; $(MAKE) OPTIMIZE="" OTHERLDFLAGS="$(SWIG_LDFLAGS)"
-@@ -705,8 +706,7 @@
+@@ -716,8 +717,7 @@ clean-swig-pl:
  	fi
  	for d in $(SWIG_PL_DIR)/libsvn_swig_perl; \
  	do \
@@ -69,7 +60,7 @@
  	done
  	if [ -f "$(SWIG_PL_DIR)/native/Makefile" ]; then \
  	  cd $(SWIG_PL_DIR)/native; $(MAKE) clean; \
-@@ -739,7 +739,7 @@
+@@ -750,7 +750,7 @@ clean-swig-py:
  	fi
  	for d in $(SWIG_PY_DIR) $(SWIG_PY_DIR)/libsvn_swig_py; \
  	do \
@@ -78,7 +69,7 @@
  	done
  	find $(SWIG_PY_SRC_DIR) $(SWIG_PY_DIR) -name "*.pyc" -exec rm {} ';'
  
-@@ -763,8 +763,7 @@
+@@ -774,8 +774,7 @@ clean-swig-rb:
  	fi
  	for d in $(SWIG_RB_DIR) $(SWIG_RB_DIR)/libsvn_swig_ruby; \
  	do \
@@ -90,7 +81,7 @@
  extraclean-swig-rb: clean-swig-rb
 --- a/build/generator/gen_make.py
 +++ b/build/generator/gen_make.py
-@@ -183,9 +183,9 @@
+@@ -183,9 +183,9 @@ class Generator(gen_base.GeneratorBase):
        source_dir = build_path_dirname(source)
        opts = self.swig.opts[objname.lang]
        if not self.release_mode:
@@ -103,7 +94,7 @@
          )
  
      self.ofile.write('\n')
-@@ -456,11 +456,11 @@
+@@ -456,11 +456,11 @@ class Generator(gen_base.GeneratorBase):
        self.ofile.write('%s: %s\n' % (objname, deps))
        cmd = objname.compile_cmd
        if cmd:
@@ -120,7 +111,7 @@
  
 --- a/build/generator/gen_base.py
 +++ b/build/generator/gen_base.py
-@@ -284,7 +284,8 @@
+@@ -284,7 +284,8 @@ class SourceFile(DependencyNode):
  
  class SWIGSource(SourceFile):
    def __init__(self, filename):
@@ -132,7 +123,7 @@
  lang_abbrev = {
 --- a/build/generator/swig/header_wrappers.py
 +++ b/build/generator/swig/header_wrappers.py
-@@ -32,7 +32,7 @@
+@@ -32,7 +32,7 @@ class Generator(generator.swig.Generator
      """Write makefile rules for generating SWIG wrappers for Subversion
      header files."""
      wrapper_fnames = []
@@ -143,7 +134,7 @@
      for fname in self.includes:
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1010,6 +1010,11 @@
+@@ -1010,6 +1010,11 @@ SVN_CONFIG_SCRIPT(packages/solaris/pkgin
  AC_SUBST(SVN_CONFIG_SCRIPT_FILES)
  
  AC_OUTPUT
@@ -157,7 +148,7 @@
  
 --- a/build.conf
 +++ b/build.conf
-@@ -648,13 +648,14 @@
+@@ -648,13 +648,14 @@ libs = libsvn_test libsvn_repos libsvn_f
  # ----------------------------------------------------------------------------
  # Tests for libsvn_subr
  

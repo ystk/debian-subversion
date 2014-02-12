@@ -1,0 +1,88 @@
+Support -cA-B syntax on command line, from upstream trunk r1004727,1004746.
+This is pure convenience.  -c12,15-20,25 is equivalent to -c12 -r14:20 -c25.
+
+
+--- a/subversion/svn/main.c
++++ b/subversion/svn/main.c
+@@ -1212,7 +1212,7 @@
+       case 'c':
+         {
+           char *end;
+-          svn_revnum_t changeno;
++          svn_revnum_t changeno, changeno_end;
+           svn_opt_revision_range_t *range;
+           apr_array_header_t *change_revs =
+             svn_cstring_split(opt_arg, ", \n\r\t\v", TRUE, pool);
+@@ -1236,7 +1236,22 @@
+                  ### "{DATE}" and the special words. */
+               while (*change_str == 'r')
+                 change_str++;
+-              changeno = strtol(change_str, &end, 10);
++              changeno = changeno_end = strtol(change_str, &end, 10);
++              if (end != change_str && *end == '-')
++                {
++                  if (changeno < 0)
++                    {
++                      err = svn_error_createf(SVN_ERR_CL_ARG_PARSING_ERROR, NULL,
++                                              _("Negative number in range (%s)"
++                                                " not supported with -c"),
++                                              change_str);
++                      return svn_cmdline_handle_exit_error(err, pool, "svn: ");
++                    }
++                  change_str = end+1;
++                  while (*change_str == 'r')
++                    change_str++;
++                  changeno_end = strtol(change_str, &end, 10);
++                }
+               if (end == change_str || *end != '\0')
+                 {
+                   err = svn_error_createf(SVN_ERR_CL_ARG_PARSING_ERROR, NULL,
+@@ -1254,19 +1269,28 @@
+ 
+               /* Figure out the range:
+                     -c N  -> -r N-1:N
+-                    -c -N -> -r N:N-1 */
+-              range = apr_palloc(pool, sizeof(*range));
++                    -c -N -> -r N:N-1
++                    -c M-N -> -r M-1:N for M < N
++                    -c M-N -> -r M:N-1 for M > N
++                    -c -M-N -> error (too confusing/no valid use case)
++              */
+               if (changeno > 0)
+                 {
+-                  range->start.value.number = changeno - 1;
+-                  range->end.value.number = changeno;
++                  if (changeno <= changeno_end)
++                    changeno--;
++                  else
++                    changeno_end--;
+                 }
+               else
+                 {
+                   changeno = -changeno;
+-                  range->start.value.number = changeno;
+-                  range->end.value.number = changeno - 1;
++                  changeno_end = changeno - 1;
+                 }
++
++              range = apr_palloc(pool, sizeof(*range));
++              range->start.value.number = changeno;
++              range->end.value.number = changeno_end;
++
+               opt_state.used_change_arg = TRUE;
+               range->start.kind = svn_opt_revision_number;
+               range->end.kind = svn_opt_revision_number;
+--- a/subversion/svn/log-cmd.c
++++ b/subversion/svn/log-cmd.c
+@@ -481,9 +481,9 @@
+           range = APR_ARRAY_IDX(opt_state->revision_ranges, i,
+                                 svn_opt_revision_range_t *);
+           if (range->start.value.number < range->end.value.number)
+-            range->start = range->end;
++            range->start.value.number++;
+           else
+-            range->end = range->start;
++            range->end.value.number++;
+         }
+     }
+ 

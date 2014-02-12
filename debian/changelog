@@ -1,3 +1,140 @@
+subversion (1.6.17dfsg-4+deb7u4) wheezy; urgency=low
+
+  * Non-maintainer upload.
+  * patches/python-swig205: Backport upstream patch to fix Python bindings
+    when built against swig 2.0.5+.  (Closes: #683188)
+  * Remove patches/chunksize-integer.patch
+
+ -- James McCoy <jamessan@debian.org>  Wed, 02 Oct 2013 21:40:37 -0400
+
+subversion (1.6.17dfsg-4+deb7u3) wheezy-security; urgency=high
+
+  * Non-maintainer upload by the Security Team.
+  * Add CVE-2013-1968.patch patch.
+    CVE-2013-1968: Subversion FSFS repositories can be corrupted by newline
+    characters in filenames. (Closes: #711033)
+  * Add CVE-2013-2112.patch patch.
+    CVE-2013-2112: Fix remotely triggerable DoS vulnerability. (Closes: #711033)
+
+ -- Salvatore Bonaccorso <carnil@debian.org>  Wed, 05 Jun 2013 23:12:33 +0200
+
+subversion (1.6.17dfsg-4+deb7u2) wheezy; urgency=low
+
+  * Non-maintainer upload.
+  * Include following security fixes (Closes: #704940):
+    - CVE-2013-1845: Remotely triggered memory exhaustion in mod_dav_svn
+    - CVE-2013-1846: Remotely triggered crash in mod_dav_svn
+    - CVE-2013-1847: Remotely triggered crash in mod_dav_svn
+    - CVE-2013-1849: Remotely triggered crash in mod_dav_svn
+  * Convert SVN_STREAM_CHUNK_SIZE to an integer in svn/core.py
+    (Closes: #683188).
+
+ -- Thomas Preud'homme <robotux@debian.org>  Tue, 16 Apr 2013 14:36:14 +0200
+
+subversion (1.6.17dfsg-4+deb7u1) wheezy; urgency=low
+
+  * Non-maintainer upload.
+  * No-change rebuild against swig 2.0.7 (closes: #683188)
+
+ -- Julien Cristau <jcristau@debian.org>  Fri, 22 Mar 2013 16:29:41 +0100
+
+subversion (1.6.17dfsg-4) unstable; urgency=medium
+
+  * Ack NMU, thanks Ondrej.  Urgency medium because the NMU fixes RC bugs.
+    - Revert libsvn-java split.  Instead, disable multiarch for libsvn-java.
+      If anyone _needs_ multiarch for Java libraries, which I doubt, we
+      should come up with a way to produce deterministic jar files.
+    - Reintroduce specific db dependencies, so a random binNMU can't
+      change the DB version without warning.
+  * Disable serf support for now, as this release won't properly work with
+    serf 1.0.
+  * patches/g++47: New patch to build with g++ 4.7.
+  * Policy 3.9.3 (no changes).
+  * Move ruby files to /usr/lib/ruby/vendor_ruby per ruby policy.
+
+ -- Peter Samuelson <peter@p12n.org>  Sun, 03 Jun 2012 17:54:15 -0500
+
+subversion (1.6.17dfsg-3.1) unstable; urgency=low
+
+  * Non-maintainer upload
+  * Disable test-suite which was broken by apr 1.4.6 update (Closes: #669494)
+  * Also rescue on Errno::EINVAL (Closes: #624810, #629952)
+  * Split libsvn-java to libsvn-java and libsvn-jni (Closes: #670034)
+  * Depend on generic libdb-dev and db-util (Closes: #621460)
+  * Install java files prior to dh_install -i call
+  * Declare proper relationships between -jni and -java packages
+
+ -- Ondřej Surý <ondrej@debian.org>  Tue, 29 May 2012 15:49:32 +0200
+
+subversion (1.6.17dfsg-3) unstable; urgency=medium
+
+  * libapache2.preinst: Fix upgrade case from before 1.6.17dfsg-2.
+  * libapache2.prerm: 'a2dismod' modules in reverse dependency order.
+  * patches/apache_module_dependency: New patch to allow mod_authz_svn to
+    load before mod_dav_svn and still use its functions.
+    All these together, Closes: #642250.
+  * Remove a bit more autofoo in 'clean' target.
+
+ -- Peter Samuelson <peter@p12n.org>  Sat, 19 Nov 2011 18:56:28 -0600
+
+subversion (1.6.17dfsg-2) unstable; urgency=low
+
+  * Standards-Version: 3.9.2.  Also, multiarch.
+  * Move to debhelper level 7.
+  * patches/perl-warning: New patch to suppress a bogus Perl undef warning.
+    (Closes: #422699)
+  * patches/swig2-compat: New patch from upstream to build with swig 2.x.
+    (Closes: #634049)
+  * patches/perl-compiler-flags: New patch from upstream to address an
+    issue brought to light by Perl 5.14.  (Closes: #628507)
+  * patches/sasl-mem-handling: New patch from upstream to fix a crash with
+    svn:// URLs and SASL authentication.  (Closes: #631765)
+  * patches/svn2cl-upstream: Use --non-interactive in svn2cl to avoid
+    hanging on, e.g., password prompts.  (Closes: #443860)
+  * patches/python-exception-syntax: New patch: Fix a couple instances of
+    literal string exceptions in Python, which don't work in 2.6+.
+    (Closes: #585358)
+  * Remove some preinst/postinst magic that hasn't been needed in years.
+  * Split authz_svn.load away from dav_svn.load, since most users do not
+    need both.  New installs will enable only dav_svn by default.
+  * Restart apache in libapache2-svn postinst.  (Closes: #610236, #628990)
+  * Improve symbols file with (regex)__ catchall for private symbols not
+    otherwise accounted for.  (Closes: #607544)  I'm also including a
+    workaround for rapidsvn, to be removed when 0.14 is released.
+  * Add ${misc:Depends} everywhere.  Drop libsvn-java dependency on a jre.
+    Thanks, Lintian.
+  * Remove the extra copy of jquery supplied by doxygen, from libsvn-doc.
+    Doesn't seem to even be used.  Thanks, Lintian.
+  * patches/po: New patch from Laurent Bigonville to fix minor issues in
+    fr.po and ja.po.  (Closes: #607381)
+  * Move to dh_lintian, and fix up the overrides a bit.
+
+ -- Peter Samuelson <peter@p12n.org>  Thu, 15 Sep 2011 12:02:03 -0500
+
+subversion (1.6.17dfsg-1) unstable; urgency=high
+
+  * New upstream version.  Includes security fixes:
+    - CVE-2011-1752: Remotely triggered crash in mod_dav_svn
+    - CVE-2011-1783: Remotely triggered memory exhaustion in mod_dav_svn
+    - CVE-2011-1921: Content leak of certain files marked unreadable
+  * svn-bisect: Support $SVN environment variable, requested by Daniel
+    Shahaf upstream.
+  * Update Lintian overrides to account for python through 2.9,
+    in case that ever comes to be.
+
+ -- Peter Samuelson <peter@p12n.org>  Wed, 01 Jun 2011 17:07:33 -0500
+
+subversion (1.6.16dfsg-1) unstable; urgency=high
+
+  * New upstream version.
+    - Fixes CVE-2011-0715: Remotely crash mod_dav_svn anonymously via a
+      lock token.
+  * patches/change-range: New patch to support -cA-B syntax on command line.
+  * Stop using svn-make-config.c; we can do the same just by running svn
+    itself in a controlled home directory.  Delete debian/tools/.
+
+ -- Peter Samuelson <peter@p12n.org>  Thu, 03 Mar 2011 10:55:42 -0600
+
 subversion (1.6.12dfsg-4) unstable; urgency=high
 
   * patches/loosen-sqlite-version-check: New patch: Relax the SQLite

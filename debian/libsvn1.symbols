@@ -1,5 +1,7 @@
 libsvn_client-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_client_add2@Base 1.4
  svn_client_add3@Base 1.4
  svn_client_add4@Base 1.5
@@ -134,7 +136,9 @@ libsvn_client-1.so.1 libsvn1 #MINVER#
  svn_client_version@Base 1.4
  svn_info_dup@Base 1.4
 libsvn_delta-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_compat_wrap_file_rev_handler@Base 1.5
  svn_delta_default_editor@Base 1.4
  svn_delta_depth_filter_editor@Base 1.5
@@ -161,7 +165,9 @@ libsvn_delta-1.so.1 libsvn1 #MINVER#
  svn_txdelta_to_svndiff@Base 1.4
  svn_txdelta_window_dup@Base 1.4
 libsvn_diff-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_diff_contains_conflicts@Base 1.4
  svn_diff_contains_diffs@Base 1.4
  svn_diff_diff3@Base 1.4
@@ -189,7 +195,9 @@ libsvn_diff-1.so.1 libsvn1 #MINVER#
  svn_diff_output@Base 1.4
  svn_diff_version@Base 1.4
 libsvn_fs-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_fs_abort_txn@Base 1.4
  svn_fs_access_add_lock_token2@Base 1.6
  svn_fs_access_add_lock_token@Base 1.4
@@ -292,7 +300,9 @@ libsvn_fs-1.so.1 libsvn1 #MINVER#
  svn_fs_version@Base 1.4
  svn_fs_youngest_rev@Base 1.4
 libsvn_ra-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_ra_change_rev_prop@Base 1.4
  svn_ra_check_path@Base 1.4
  svn_ra_create_callbacks@Base 1.4
@@ -347,7 +357,9 @@ libsvn_ra-1.so.1 libsvn1 #MINVER#
  svn_ra_unlock@Base 1.4
  svn_ra_version@Base 1.4
 libsvn_ra_svn-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_ra_svn_conn_remote_host@Base 1.6
  svn_ra_svn_cram_server@Base 1.4
  svn_ra_svn_create_conn@Base 1.4
@@ -379,7 +391,9 @@ libsvn_ra_svn-1.so.1 libsvn1 #MINVER#
  svn_ra_svn_write_tuple@Base 1.4
  svn_ra_svn_write_word@Base 1.4
 libsvn_repos-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_repos_abort_report@Base 1.4
  svn_repos_authz_check_access@Base 1.4
  svn_repos_authz_read@Base 1.4
@@ -477,7 +491,9 @@ libsvn_repos-1.so.1 libsvn1 #MINVER#
  svn_repos_verify_fs@Base 1.5
  svn_repos_version@Base 1.4
 libsvn_subr-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_auth_first_credentials@Base 1.4
  svn_auth_get_parameter@Base 1.4
  svn_auth_get_platform_specific_client_providers@Base 1.6
@@ -598,6 +614,7 @@ libsvn_subr-1.so.1 libsvn1 #MINVER#
  svn_dso_initialize@Base 1.4
  svn_dso_load@Base 1.4
  svn_err_best_message@Base 1.4
+ svn_error__locate@Base 1.0
  svn_error_abort_on_malfunction@Base 1.6
  svn_error_clear@Base 1.4
  svn_error_compose@Base 1.4
@@ -700,6 +717,7 @@ libsvn_subr-1.so.1 libsvn1 #MINVER#
  svn_io_wait_for_cmd@Base 1.4
  svn_io_write_unique@Base 1.6
  svn_io_write_version_file@Base 1.4
+ svn_iter__break@Base 1.5
  svn_iter_apr_array@Base 1.5
  svn_iter_apr_hash@Base 1.5
  svn_location_segment_dup@Base 1.5
@@ -825,6 +843,8 @@ libsvn_subr-1.so.1 libsvn1 #MINVER#
  svn_rangelist_to_string@Base 1.5
  svn_revnum_parse@Base 1.5
  svn_sleep_for_timestamps@Base 1.4
+# FIXME: rapidsvn needs svn_sort__hash, but shouldn't.  #607544
+ svn_sort__hash@Base 1.0
  svn_sort_compare_items_as_paths@Base 1.4
  svn_sort_compare_items_lexically@Base 1.4
  svn_sort_compare_paths@Base 1.4
@@ -974,7 +994,9 @@ libsvn_subr-1.so.1 libsvn1 #MINVER#
  svn_xml_parse@Base 1.4
  svn_xml_signal_bailout@Base 1.4
 libsvn_wc-1.so.1 libsvn1 #MINVER#
+| libsvn-private
 * Build-Depends-Package: libsvn-dev
+ (regex)__ 0 1
  svn_wc_add2@Base 1.4
  svn_wc_add3@Base 1.6
  svn_wc_add@Base 1.4

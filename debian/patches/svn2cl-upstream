@@ -1,3 +1,8 @@
+- Fix the XSL to better comply with XML standards.  (#546990)
+- Use svn --non-interactive to avoid hanging on, e.g., password prompts.
+  (#443860)
+
+
 --- a/contrib/client-side/svn2cl/svn2cl.xsl
 +++ b/contrib/client-side/svn2cl/svn2cl.xsl
 @@ -56,8 +56,6 @@
@@ -156,3 +161,25 @@
    <xsl:if test="$count&gt;1">
     <xsl:call-template name="newlines">
      <xsl:with-param name="count" select="($count)-1" />
+--- a/contrib/client-side/svn2cl/svn2cl.sh
++++ b/contrib/client-side/svn2cl/svn2cl.sh
+@@ -50,8 +50,8 @@ SEPARATEDAYLOGS="no"
+ ACTIONS="no"
+ CHANGELOG=""
+ OUTSTYLE="cl"
+-SVNLOGCMD="svn --verbose --xml log"
+-SVNINFOCMD="svn info"
++SVNLOGCMD="svn --non-interactive --verbose --xml log"
++SVNINFOCMD="svn --non-interactive info"
+ AUTHORSFILE=""
+ IGNORE_MESSAGE_STARTING=""
+ TITLE="ChangeLog"
+@@ -290,7 +290,7 @@ fi
+ # try to determin a prefix to strip from all paths
+ if [ "$STRIPPREFIX" = "AUTOMATICALLY-DETERMINED" ]
+ then
+-  STRIPPREFIX=`LANG=C eval "$SVNINFOCMD" 2> /dev/null | $AWK '/^URL:/{url=$2} /^Repository Root:/{root=$3} END{if(root){print substr(url,length(root)+2)}else{n=split(url,u,"/");print u[n]}}'`
++  STRIPPREFIX=`LANG=C eval "$SVNINFOCMD" | $AWK '/^URL:/{url=$2} /^Repository Root:/{root=$3} END{if(root){print substr(url,length(root)+2)}else{n=split(url,u,"/");print u[n]}}'`
+   STRIPPREFIX=`echo "$STRIPPREFIX" | sed 's/%20/ /g'`
+ fi
+ 

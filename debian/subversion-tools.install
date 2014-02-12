@@ -9,6 +9,8 @@ contrib/client-side/svn-clean			usr/bin
 contrib/client-side/svn_apply_autoprops.py	usr/bin
 contrib/client-side/svnmerge/svnmerge.py	usr/bin
 contrib/client-side/svn2cl/svn2cl.sh		usr/bin
-contrib/client-side/svn2cl/*.{xml,xsl,css}	etc/svn2cl
+contrib/client-side/svn2cl/*.xml		etc/svn2cl
+contrib/client-side/svn2cl/*.xsl		etc/svn2cl
+contrib/client-side/svn2cl/*.css		etc/svn2cl
 debian/bin/svn-bisect				usr/bin
 debian/bin/svnwrap				usr/bin
