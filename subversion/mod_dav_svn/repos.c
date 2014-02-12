@@ -1607,6 +1607,23 @@ parse_querystring(request_rec *r, const char *query,
 }
 
 
+/* Return TRUE iff STR exactly matches any of the elements of LIST. */
+static svn_boolean_t
+match_list(const char *str, const apr_array_header_t *list)
+{
+  int i;
+
+  for (i = 0; i < list->nelts; i++)
+    {
+      const char *this_str = APR_ARRAY_IDX(list, i, char *);
+
+      if (strcmp(this_str, str) == 0)
+        return TRUE;
+    }
+
+  return FALSE;
+}
+
 
 static dav_error *
 get_resource(request_rec *r,
@@ -1815,8 +1832,7 @@ get_resource(request_rec *r,
             apr_array_header_t *vals
               = svn_cstring_split(val, ",", TRUE, r->pool);
 
-            if (svn_cstring_match_glob_list(SVN_DAV_NS_DAV_SVN_MERGEINFO,
-                                            vals))
+            if (match_list(SVN_DAV_NS_DAV_SVN_MERGEINFO, vals))
               {
                 apr_hash_set(repos->client_capabilities,
                              SVN_RA_CAPABILITY_MERGEINFO,
@@ -1923,8 +1939,10 @@ get_resource(request_rec *r,
       dav_locktoken_list *list = ltl;
 
       serr = svn_fs_get_access(&access_ctx, repos->fs);
-      if (serr)
+      if (serr || !access_ctx)
         {
+          if (serr == NULL)
+            serr = svn_error_create(SVN_ERR_FS_LOCK_OWNER_MISMATCH, NULL, NULL);
           return dav_svn__sanitize_error(serr, "Lock token is in request, "
                                          "but no user name",
                                          HTTP_BAD_REQUEST, r);
@@ -2825,10 +2843,11 @@ deliver(const dav_resource *resource, ap_filter_t *output)
   apr_status_t status;
 
   /* Check resource type */
-  if (resource->type != DAV_RESOURCE_TYPE_REGULAR
-      && resource->type != DAV_RESOURCE_TYPE_VERSION
-      && resource->type != DAV_RESOURCE_TYPE_WORKING
-      && resource->info->restype != DAV_SVN_RESTYPE_PARENTPATH_COLLECTION)
+  if (resource->baselined
+      || (resource->type != DAV_RESOURCE_TYPE_REGULAR
+          && resource->type != DAV_RESOURCE_TYPE_VERSION
+          && resource->type != DAV_RESOURCE_TYPE_WORKING
+          && resource->info->restype != DAV_SVN_RESTYPE_PARENTPATH_COLLECTION))
     {
       return dav_new_error(resource->pool, HTTP_CONFLICT, 0,
                            "Cannot GET this type of resource.");
@@ -2840,6 +2859,7 @@ deliver(const dav_resource *resource, ap_filter_t *output)
       apr_hash_t *entries;
       apr_pool_t *entry_pool;
       apr_array_header_t *sorted;
+      svn_revnum_t dir_rev = SVN_INVALID_REVNUM;
       int i;
 
       /* XML schema for the directory index if xslt_uri is set:
@@ -2916,6 +2936,7 @@ deliver(const dav_resource *resource, ap_filter_t *output)
         }
       else
         {
+          dir_rev = svn_fs_revision_root_revision(resource->info->root.root);
           serr = svn_fs_dir_entries(&entries, resource->info->root.root,
                                     resource->info->repos_path, resource->pool);
           if (serr != NULL)
@@ -3022,8 +3043,30 @@ deliver(const dav_resource *resource, ap_filter_t *output)
           const char *name = item->key;
           const char *href = name;
           svn_boolean_t is_dir = (entry->kind == svn_node_dir);
+          const char *repos_relpath = NULL;
 
           svn_pool_clear(entry_pool);
+
+          /* DIR_REV is set to a valid revision if we're looking at
+             the entries of a versioned directory.  Otherwise, we're
+             looking at a parent-path listing. */
+          if (SVN_IS_VALID_REVNUM(dir_rev))
+            {
+              repos_relpath = svn_path_join(resource->info->repos_path,
+                                            name, entry_pool);
+              if (! dav_svn__allow_read(resource->info->r,
+                                        resource->info->repos,
+                                        repos_relpath,
+                                        dir_rev,
+                                        entry_pool))
+                continue;
+            }
+          else
+            {
+              /* ### TODO:  We could test for readability of the root
+                     directory of each repository and hide those that
+                     the user can't see. */
+            }
 
           /* append a trailing slash onto the name for directories. we NEED
              this for the href portion so that the relative reference will
@@ -3635,6 +3678,7 @@ do_walk(walker_ctx_t *ctx, int depth)
   apr_size_t uri_len;
   apr_size_t repos_len;
   apr_hash_t *children;
+  apr_pool_t *iterpool;
 
   /* Clear the temporary pool. */
   svn_pool_clear(ctx->info.pool);
@@ -3710,12 +3754,15 @@ do_walk(walker_ctx_t *ctx, int depth)
                                 params->pool);
 
   /* iterate over the children in this collection */
+  iterpool = svn_pool_create(params->pool);
   for (hi = apr_hash_first(params->pool, children); hi; hi = apr_hash_next(hi))
     {
       const void *key;
       apr_ssize_t klen;
       void *val;
       svn_fs_dirent_t *dirent;
+
+      svn_pool_clear(iterpool);
 
       /* fetch one of the children */
       apr_hash_this(hi, &key, &klen, &val);
@@ -3724,7 +3771,16 @@ do_walk(walker_ctx_t *ctx, int depth)
       /* authorize access to this resource, if applicable */
       if (params->walk_type & DAV_WALKTYPE_AUTH)
         {
-          /* ### how/what to do? */
+          const char *repos_relpath =
+            apr_pstrcat(iterpool, 
+                        apr_pstrmemdup(iterpool,
+                                       ctx->repos_path->data,
+                                       ctx->repos_path->len),
+                        key, NULL);
+          if (! dav_svn__allow_read(ctx->info.r, ctx->info.repos,
+                                    repos_relpath, ctx->info.root.rev,
+                                    iterpool))
+            continue;
         }
 
       /* append this child to our buffers */
@@ -3765,6 +3821,9 @@ do_walk(walker_ctx_t *ctx, int depth)
       ctx->uri->len = uri_len;
       ctx->repos_path->len = repos_len;
     }
+  
+  svn_pool_destroy(iterpool);
+
   return NULL;
 }
 
@@ -3780,6 +3839,12 @@ walk(const dav_walk_params *params, int depth, dav_response **response)
 
   walker_ctx_t ctx = { 0 };
   dav_error *err;
+
+  if (params->root->info->restype == DAV_SVN_RESTYPE_PARENTPATH_COLLECTION)
+    {
+      /* Cannot walk an SVNParentPath collection, there is no repository. */
+      return NULL;
+    }
 
   ctx.params = params;
 

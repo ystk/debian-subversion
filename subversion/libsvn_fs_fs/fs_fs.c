@@ -33,6 +33,7 @@
 
 #include "svn_pools.h"
 #include "svn_fs.h"
+#include "svn_dirent_uri.h"
 #include "svn_path.h"
 #include "svn_hash.h"
 #include "svn_props.h"
@@ -1221,11 +1222,29 @@ upgrade_body(void *baton, apr_pool_t *pool)
   svn_fs_t *fs = baton;
   int format, max_files_per_dir;
   const char *format_path = path_format(fs, pool);
+  svn_node_kind_t kind;
 
   /* Read the FS format number and max-files-per-dir setting. */
   SVN_ERR(read_format(&format, &max_files_per_dir, format_path, pool));
 
-  /* If we're already up-to-date, there's nothing to be done here. */
+  /* If the config file does not exist, create one. */
+  SVN_ERR(svn_io_check_path(svn_dirent_join(fs->path, PATH_CONFIG, pool),
+                            &kind, pool));
+  switch (kind)
+    {
+    case svn_node_none:
+      SVN_ERR(write_config(fs, pool));
+      break;
+    case svn_node_dir:
+      return svn_error_createf(SVN_ERR_FS_GENERAL, NULL,
+                               _("'%s' is a directory. Please move it out of "
+                                 "the way and try again"),
+                               svn_dirent_join(fs->path, PATH_CONFIG, pool));
+    default:
+      break;
+    }
+
+  /* If we're already up-to-date, there's nothing else to be done here. */
   if (format == SVN_FS_FS__FORMAT_NUMBER)
     return SVN_NO_ERROR;
 
@@ -1423,14 +1442,68 @@ svn_fs_fs__hotcopy(const char *src_path,
                       pool));
   SVN_ERR(check_format(format));
 
+  /* Try to copy the config.
+   *
+   * ### We try copying the config file before doing anything else,
+   * ### because higher layers will abort the hotcopy if we throw
+   * ### an error from this function, and that renders the hotcopy
+   * ### unusable anyway. */
+  if (format >= SVN_FS_FS__MIN_CONFIG_FILE)
+    {
+      svn_error_t *err;
+
+      err = svn_io_dir_file_copy(src_path, dst_path, PATH_CONFIG, pool);
+      if (err)
+        {
+          if (APR_STATUS_IS_ENOENT(err->apr_err))
+            {
+              /* 1.6.0 to 1.6.11 did not copy the configuration file during
+               * hotcopy. So if we're hotcopying a repository which has been
+               * created as a hotcopy itself, it's possible that fsfs.conf
+               * does not exist. Ask the user to re-create it.
+               *
+               * ### It would be nice to make this a non-fatal error,
+               * ### but this function does not get an svn_fs_t object
+               * ### so we have no way of just printing a warning via
+               * ### the fs->warning() callback. */
+
+              const char *msg;
+              const char *src_abspath;
+              const char *dst_abspath;
+              const char *config_relpath;
+              svn_error_t *err2;
+
+              config_relpath = svn_dirent_join(src_path, PATH_CONFIG, pool);
+              err2 = svn_dirent_get_absolute(&src_abspath, src_path, pool);
+              if (err2)
+                return svn_error_compose_create(err, err2);
+              err2 = svn_dirent_get_absolute(&dst_abspath, dst_path, pool);
+              if (err2)
+                return svn_error_compose_create(err, err2);
+              
+              /* ### hack: strip off the 'db/' directory from paths so
+               * ### they make sense to the user */
+              src_abspath = svn_dirent_dirname(src_abspath, pool);
+              dst_abspath = svn_dirent_dirname(dst_abspath, pool);
+
+              msg = apr_psprintf(pool,
+                                 _("Failed to create hotcopy at '%s'. "
+                                   "The file '%s' is missing from the source "
+                                   "repository. Please create this file, for "
+                                   "instance by running 'svnadmin upgrade %s'"),
+                                 dst_abspath, config_relpath, src_abspath);
+              return svn_error_quick_wrap(err, msg);
+            }
+          else
+            return err;
+        }
+    }
+
   /* Copy the current file. */
   SVN_ERR(svn_io_dir_file_copy(src_path, dst_path, PATH_CURRENT, pool));
 
   /* Copy the uuid. */
   SVN_ERR(svn_io_dir_file_copy(src_path, dst_path, PATH_UUID, pool));
-
-  /* Copy the config. */
-  SVN_ERR(svn_io_dir_file_copy(src_path, dst_path, PATH_CONFIG, pool));
 
   /* Copy the min unpacked rev, and read its value. */
   if (format >= SVN_FS_FS__MIN_PACKED_FORMAT)
@@ -1727,7 +1800,7 @@ get_packed_offset(apr_off_t *rev_offset,
   fs_fs_data_t *ffd = fs->fsap_data;
   svn_stream_t *manifest_stream;
   svn_boolean_t is_cached;
-  int shard;
+  svn_revnum_t shard;
   apr_array_header_t *manifest;
   apr_pool_t *iterpool;
 
@@ -5273,11 +5346,21 @@ write_hash_rep(svn_filesize_t *size,
 }
 
 /* Copy a node-revision specified by id ID in fileystem FS from a
-   transaction into the permanent rev-file FILE.  Return the offset of
+   transaction into the proto-rev-file FILE.  Return the offset of
    the new node-revision in *OFFSET.  If this is a directory, all
    children are copied as well.  START_NODE_ID and START_COPY_ID are
    the first available node and copy ids for this filesystem, for older
-   FS formats. Temporary allocations are from POOL. */
+   FS formats.
+
+   REV is the revision number that this proto-rev-file will represent.
+
+   INITIAL_OFFSET is the offset of the proto-rev-file on entry to
+   commit_body.
+
+   If REPS_TO_CACHE is not NULL, append to it a copy (allocated in
+   REPS_POOL) of each data rep that is new in this revision.
+
+   Temporary allocations are from POOL.  */
 static svn_error_t *
 write_final_rev(const svn_fs_id_t **new_id_p,
                 apr_file_t *file,
@@ -5286,6 +5369,7 @@ write_final_rev(const svn_fs_id_t **new_id_p,
                 const svn_fs_id_t *id,
                 const char *start_node_id,
                 const char *start_copy_id,
+                apr_off_t initial_offset,
                 apr_array_header_t *reps_to_cache,
                 apr_pool_t *reps_pool,
                 apr_pool_t *pool)
@@ -5325,7 +5409,7 @@ write_final_rev(const svn_fs_id_t **new_id_p,
           apr_hash_this(hi, NULL, NULL, &val);
           dirent = val;
           SVN_ERR(write_final_rev(&new_id, file, rev, fs, dirent->id,
-                                  start_node_id, start_copy_id,
+                                  start_node_id, start_copy_id, initial_offset,
                                   reps_to_cache, reps_pool,
                                   subpool));
           if (new_id && (svn_fs_fs__id_rev(new_id) == rev))
@@ -5357,6 +5441,14 @@ write_final_rev(const svn_fs_id_t **new_id_p,
         {
           noderev->data_rep->txn_id = NULL;
           noderev->data_rep->revision = rev;
+
+          /* See issue 3845.  Some unknown mechanism caused the
+             protorev file to get truncated, so check for that
+             here.  */
+          if (noderev->data_rep->offset + noderev->data_rep->size
+              > initial_offset)
+            return svn_error_create(SVN_ERR_FS_CORRUPT, NULL,
+                                    _("Truncated protorev file detected"));
         }
     }
 
@@ -5689,7 +5781,7 @@ commit_body(void *baton, apr_pool_t *pool)
   svn_revnum_t old_rev, new_rev;
   apr_file_t *proto_file;
   void *proto_file_lockcookie;
-  apr_off_t changed_path_offset;
+  apr_off_t initial_offset, changed_path_offset;
   char *buf;
   apr_hash_t *txnprops;
   svn_string_t date;
@@ -5720,11 +5812,12 @@ commit_body(void *baton, apr_pool_t *pool)
   /* Get a write handle on the proto revision file. */
   SVN_ERR(get_writable_proto_rev(&proto_file, &proto_file_lockcookie,
                                  cb->fs, cb->txn->id, pool));
+  SVN_ERR(get_file_offset(&initial_offset, proto_file, pool));
 
   /* Write out all the node-revisions and directory contents. */
   root_id = svn_fs_fs__id_txn_create("0", "0", cb->txn->id, pool);
   SVN_ERR(write_final_rev(&new_root_id, proto_file, new_rev, cb->fs, root_id,
-                          start_node_id, start_copy_id,
+                          start_node_id, start_copy_id, initial_offset,
                           cb->reps_to_cache, cb->reps_pool,
                           pool));
 
@@ -5830,12 +5923,18 @@ commit_body(void *baton, apr_pool_t *pool)
   /* Update the 'current' file. */
   SVN_ERR(write_final_current(cb->fs, cb->txn->id, new_rev, start_node_id,
                               start_copy_id, pool));
+
+  /* At this point the new revision is committed and globally visible
+     so let the caller know it succeeded by giving it the new revision
+     number, which fulfills svn_fs_commit_txn() contract.  Any errors
+     after this point do not change the fact that a new revision was
+     created. */
+  *cb->new_rev_p = new_rev;
+
   ffd->youngest_rev_cache = new_rev;
 
   /* Remove this transaction directory. */
   SVN_ERR(svn_fs_fs__purge_txn(cb->fs, cb->txn->id, pool));
-
-  *cb->new_rev_p = new_rev;
 
   return SVN_NO_ERROR;
 }
@@ -5956,11 +6055,12 @@ svn_fs_fs__reserve_copy_id(const char **copy_id_p,
 static svn_error_t *
 write_revision_zero(svn_fs_t *fs)
 {
+  const char *path_revision_zero = path_rev(fs, 0, fs->pool);
   apr_hash_t *proplist;
   svn_string_t date;
 
   /* Write out a rev file for revision 0. */
-  SVN_ERR(svn_io_file_create(path_rev(fs, 0, fs->pool),
+  SVN_ERR(svn_io_file_create(path_revision_zero,
                              "PLAIN\nEND\nENDREP\n"
                              "id: 0.0.r0/17\n"
                              "type: dir\n"
@@ -5969,6 +6069,7 @@ write_revision_zero(svn_fs_t *fs)
                              "2d2977d1c96f487abe4a1e202dd03b4e\n"
                              "cpath: /\n"
                              "\n\n17 107\n", fs->pool));
+  SVN_ERR(svn_io_set_file_read_only(path_revision_zero, FALSE, fs->pool));
 
   /* Set a date on revision 0. */
   date.data = svn_time_to_cstring(apr_time_now(), fs->pool);
@@ -7002,6 +7103,8 @@ pack_shard(const char *revs_dir,
   SVN_ERR(svn_stream_close(manifest_stream));
   SVN_ERR(svn_stream_close(pack_stream));
   SVN_ERR(svn_fs_fs__dup_perms(pack_file_dir, shard_path, pool));
+  SVN_ERR(svn_io_set_file_read_only(pack_file_path, FALSE, pool));
+  SVN_ERR(svn_io_set_file_read_only(manifest_file_path, FALSE, pool));
 
   /* Update the min-unpacked-rev file to reflect our newly packed shard.
    * (ffd->min_unpacked_rev will be updated by open_pack_or_rev_file().)

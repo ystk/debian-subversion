@@ -783,15 +783,16 @@ svn_fs_begin_txn(svn_fs_txn_t **txn_p,
  *
  * If the commit succeeds, @a txn is invalid.
  *
- * If the commit fails, @a txn is still valid; you can make more
- * operations to resolve the conflict, or call svn_fs_abort_txn() to
- * abort the transaction.
+ * If the commit fails for any reason, @a *new_rev is an invalid
+ * revision number, an error other than #SVN_NO_ERROR is returned and
+ * @a txn is still valid; you can make more operations to resolve the
+ * conflict, or call svn_fs_abort_txn() to abort the transaction.
  *
  * @note Success or failure of the commit of @a txn is determined by
  * examining the value of @a *new_rev upon this function's return.  If
  * the value is a valid revision number, the commit was successful,
  * even though a non-@c NULL function return value may indicate that
- * something else went wrong.
+ * something else went wrong in post commit FS processing.
  */
 svn_error_t *
 svn_fs_commit_txn(const char **conflict_p,
@@ -1122,7 +1123,7 @@ svn_fs_path_change2_create(const svn_fs_id_t *node_rev_id,
 
 /** Determine what has changed under a @a root.
  *
- * Allocate and return a hash @a *changed_paths_p containing descriptions
+ * Allocate and return a hash @a *changed_paths2_p containing descriptions
  * of the paths changed under @a root.  The hash is keyed with
  * <tt>const char *</tt> paths, and has @c svn_fs_path_change2_t * values.
  *
@@ -1137,7 +1138,7 @@ svn_fs_path_change2_create(const svn_fs_id_t *node_rev_id,
  * @since New in 1.6.
  */
 svn_error_t *
-svn_fs_paths_changed2(apr_hash_t **changed_paths_p,
+svn_fs_paths_changed2(apr_hash_t **changed_paths2_p,
                       svn_fs_root_t *root,
                       apr_pool_t *pool);
 
