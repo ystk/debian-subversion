@@ -2,17 +2,22 @@
  * resolve-cmd.c -- Subversion resolve subcommand
  *
  * ====================================================================
- * Copyright (c) 2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -21,17 +26,11 @@
 
 
 /*** Includes. ***/
-#define APR_WANT_STDIO
-#include <apr_want.h>
-
+#include "svn_path.h"
 #include "svn_client.h"
 #include "svn_error.h"
 #include "svn_pools.h"
 #include "cl.h"
-
-/* We shouldn't be including a private header here, but it is
- * necessary for fixing issue #3416 */
-#include "private/svn_opt_private.h"
 
 #include "svn_private_config.h"
 
@@ -43,7 +42,7 @@
 svn_error_t *
 svn_cl__resolve(apr_getopt_t *os,
                 void *baton,
-                apr_pool_t *pool)
+                apr_pool_t *scratch_pool)
 {
   svn_cl__opt_state_t *opt_state = ((svn_cl__cmd_baton_t *) baton)->opt_state;
   svn_client_ctx_t *ctx = ((svn_cl__cmd_baton_t *) baton)->ctx;
@@ -51,7 +50,8 @@ svn_cl__resolve(apr_getopt_t *os,
   svn_error_t *err;
   apr_array_header_t *targets;
   int i;
-  apr_pool_t *subpool;
+  apr_pool_t *iterpool;
+  svn_boolean_t had_error = FALSE;
 
   switch (opt_state->accept_which)
     {
@@ -74,8 +74,11 @@ svn_cl__resolve(apr_getopt_t *os,
       conflict_choice = svn_wc_conflict_choose_mine_full;
       break;
     case svn_cl__accept_unspecified:
-      return svn_error_create(SVN_ERR_CL_ARG_PARSING_ERROR, NULL,
-                              _("missing --accept option"));
+      if (opt_state->non_interactive)
+        return svn_error_create(SVN_ERR_CL_ARG_PARSING_ERROR, NULL,
+                                _("missing --accept option"));
+      conflict_choice = svn_wc_conflict_choose_unspecified;
+      break;
     default:
       return svn_error_create(SVN_ERR_CL_ARG_PARSING_ERROR, NULL,
                               _("invalid 'accept' ARG"));
@@ -83,36 +86,46 @@ svn_cl__resolve(apr_getopt_t *os,
 
   SVN_ERR(svn_cl__args_to_target_array_print_reserved(&targets, os,
                                                       opt_state->targets,
-                                                      ctx, pool));
+                                                      ctx, FALSE,
+                                                      scratch_pool));
   if (! targets->nelts)
-    return svn_error_create(SVN_ERR_CL_INSUFFICIENT_ARGS, 0, NULL);
-
-  subpool = svn_pool_create(pool);
-  if (! opt_state->quiet)
-    svn_cl__get_notifier(&ctx->notify_func2, &ctx->notify_baton2, FALSE,
-                         FALSE, FALSE, pool);
+    svn_opt_push_implicit_dot_target(targets, scratch_pool);
 
   if (opt_state->depth == svn_depth_unknown)
-    opt_state->depth = svn_depth_empty;
+    {
+      if (opt_state->accept_which == svn_cl__accept_unspecified)
+        opt_state->depth = svn_depth_infinity;
+      else
+        opt_state->depth = svn_depth_empty;
+    }
 
-  SVN_ERR(svn_opt__eat_peg_revisions(&targets, targets, pool));
+  SVN_ERR(svn_cl__eat_peg_revisions(&targets, targets, scratch_pool));
 
+  SVN_ERR(svn_cl__check_targets_are_local_paths(targets));
+
+  iterpool = svn_pool_create(scratch_pool);
   for (i = 0; i < targets->nelts; i++)
     {
       const char *target = APR_ARRAY_IDX(targets, i, const char *);
-      svn_pool_clear(subpool);
+      svn_pool_clear(iterpool);
       SVN_ERR(svn_cl__check_cancel(ctx->cancel_baton));
       err = svn_client_resolve(target,
                                opt_state->depth, conflict_choice,
                                ctx,
-                               subpool);
+                               iterpool);
       if (err)
         {
           svn_handle_warning2(stderr, err, "svn: ");
           svn_error_clear(err);
+          had_error = TRUE;
         }
     }
+  svn_pool_destroy(iterpool);
 
-  svn_pool_destroy(subpool);
+  if (had_error)
+    return svn_error_create(SVN_ERR_CL_ERROR_PROCESSING_EXTERNALS, NULL,
+                            _("Failure occurred resolving one or more "
+                              "conflicts"));
+
   return SVN_NO_ERROR;
 }

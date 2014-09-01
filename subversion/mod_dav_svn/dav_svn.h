@@ -2,17 +2,22 @@
  * dav_svn.h: types, functions, macros for the DAV/SVN Apache module
  *
  * ====================================================================
- * Copyright (c) 2000-2007 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -32,11 +37,13 @@
 #include "svn_path.h"
 #include "svn_xml.h"
 #include "private/svn_dav_protocol.h"
+#include "private/svn_skel.h"
 #include "mod_authz_svn.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
+
 
 
 /* what the one VCC is called */
@@ -45,6 +52,15 @@ extern "C" {
 /* a pool-key for the shared dav_svn_root used by autoversioning  */
 #define DAV_SVN__AUTOVERSIONING_ACTIVITY "svn-autoversioning-activity"
 
+/* Option values for SVNAllowBulkUpdates.  Note that
+   it's important that CONF_BULKUPD_DEFAULT is 0 to make
+   dav_svn_merge_dir_config do the right thing. */
+typedef enum dav_svn__bulk_upd_conf {
+    CONF_BULKUPD_DEFAULT,
+    CONF_BULKUPD_ON,
+    CONF_BULKUPD_OFF,
+    CONF_BULKUPD_PREFER
+} dav_svn__bulk_upd_conf;
 
 /* dav_svn_repos
  *
@@ -66,7 +82,7 @@ extern "C" {
  * ### only a single FS open; otherwise, it will have to work a bit harder
  * ### to keep the things in sync.
  */
-typedef struct {
+typedef struct dav_svn_repos {
   apr_pool_t *pool;     /* request_rec -> pool */
 
   /* Remember the root URL path of this repository (just a path; no
@@ -103,7 +119,10 @@ typedef struct {
   svn_boolean_t autoversioning;
 
   /* Whether bulk updates are allowed for this repository. */
-  svn_boolean_t bulk_updates;
+  dav_svn__bulk_upd_conf bulk_updates;
+
+  /* Whether HTTP protocol version 2 is allowed to be used. */
+  svn_boolean_t v2_protocol;
 
   /* the open repository */
   svn_repos_t *repos;
@@ -153,12 +172,19 @@ enum dav_svn_private_restype {
   DAV_SVN_RESTYPE_BLN_COLLECTION,       /* .../!svn/bln/ */
   DAV_SVN_RESTYPE_WBL_COLLECTION,       /* .../!svn/wbl/ */
   DAV_SVN_RESTYPE_VCC,                  /* .../!svn/vcc/NAME */
-  DAV_SVN_RESTYPE_PARENTPATH_COLLECTION /* see SVNParentPath directive */
+  DAV_SVN_RESTYPE_PARENTPATH_COLLECTION,/* see SVNParentPath directive */
+
+  /* new types in HTTP protocol v2: */
+  DAV_SVN_RESTYPE_ME,                   /* .../!svn/me   */
+  DAV_SVN_RESTYPE_REV_COLLECTION,       /* .../!svn/rev/ */
+  DAV_SVN_RESTYPE_REVROOT_COLLECTION,   /* .../!svn/rvr/ */
+  DAV_SVN_RESTYPE_TXN_COLLECTION,       /* .../!svn/txn/ */
+  DAV_SVN_RESTYPE_TXNROOT_COLLECTION    /* .../!svn/txr/ */
 };
 
 
 /* store info about a root in a repository */
-typedef struct {
+typedef struct dav_svn_root {
   /* If a root within the FS has been opened, the value is stored here.
      Otherwise, this field is NULL. */
   svn_fs_root_t *root;
@@ -180,9 +206,19 @@ typedef struct {
      name. It may be NULL if this root corresponds to a specific revision.
      It may also be NULL if we have not opened the root yet.
 
-     WORKING and ACTIVITY resources use this field.
+     WORKING and ACTIVITY resources use this field, as well as PRIVATE
+     resources that directly represent either a txn or txn-root.
   */
   const char *txn_name;
+
+  /* The optional vtxn name supplied by an HTTPv2 client and
+     used in subsequent requests.  This may be NULL if the client
+     is not using a vtxn name.
+
+     PRIVATE resources that directly represent either a txn or
+     txn-root use this field.
+  */
+  const char *vtxn_name;
 
   /* If the root is part of a transaction, this contains the FS's transaction
      handle. It may be NULL if this root corresponds to a specific revision.
@@ -251,11 +287,15 @@ struct dav_resource_private {
   svn_boolean_t auto_checked_out;
 
   /* was this resource fetched using our public peg-/working-rev CGI
-     interface (ie: /path/to/item?p=PEGREV]? */
+     interface (ie: /path/to/item?p=PEGREV)? */
   svn_boolean_t pegged;
 
-  /* Pool to allocate temporary data from */
-  apr_pool_t *pool;
+  /* Cache any revprop change error */
+  svn_error_t *revprop_error;
+
+  /* was keyword substitution requested using our public CGI interface
+     (ie: /path/to/item?kw=1)? */
+  svn_boolean_t keyword_subst;
 };
 
 
@@ -275,10 +315,19 @@ const char *dav_svn__get_fs_parent_path(request_rec *r);
 svn_boolean_t dav_svn__get_autoversioning_flag(request_rec *r);
 
 /* for the repository referred to by this request, are bulk updates allowed? */
-svn_boolean_t dav_svn__get_bulk_updates_flag(request_rec *r);
+dav_svn__bulk_upd_conf dav_svn__get_bulk_updates_flag(request_rec *r);
 
 /* for the repository referred to by this request, are subrequests active? */
 svn_boolean_t dav_svn__get_pathauthz_flag(request_rec *r);
+
+/* for the repository referred to by this request, is txdelta caching active? */
+svn_boolean_t dav_svn__get_txdelta_cache_flag(request_rec *r);
+
+/* for the repository referred to by this request, is fulltext caching active? */
+svn_boolean_t dav_svn__get_fulltext_cache_flag(request_rec *r);
+
+/* for the repository referred to by this request, is revprop caching active? */
+svn_boolean_t dav_svn__get_revprop_cache_flag(request_rec *r);
 
 /* for the repository referred to by this request, are subrequests bypassed?
  * A function pointer if yes, NULL if not.
@@ -288,6 +337,17 @@ authz_svn__subreq_bypass_func_t dav_svn__get_pathauthz_bypass(request_rec *r);
 /* for the repository referred to by this request, is a GET of
    SVNParentPath allowed? */
 svn_boolean_t dav_svn__get_list_parentpath_flag(request_rec *r);
+
+/* For the repository referred to by this request, should HTTPv2
+   protocol support be advertised?  Note that this also takes into
+   account the support level expected of based on the specified
+   master server version (if provided via SVNMasterVersion).  */
+svn_boolean_t dav_svn__check_httpv2_support(request_rec *r);
+
+/* For the repository referred to by this request, should ephemeral
+   txnprop support be advertised?  */
+svn_boolean_t dav_svn__check_ephemeral_txnprops_support(request_rec *r);
+
 
 
 /* SPECIAL URI
@@ -317,28 +377,96 @@ svn_boolean_t dav_svn__get_list_parentpath_flag(request_rec *r);
    the root_dir when the resource structure is built.
 */
 
-/* Return the special URI to be used for this resource. */
+/* Return the repo-root-relative URI of the special namespace to be used for
+ * this resource.
+ * Comes from the <SVNSpecialURI> directive. */
+/* ### Is this assumed to be URI-encoded? */
 const char *dav_svn__get_special_uri(request_rec *r);
 
-/* Return a descriptive name for the repository */
+/* Return a descriptive name for the repository.
+ * Comes from the <SVNReposName> directive. */
 const char *dav_svn__get_repo_name(request_rec *r);
 
-/* Return the URI of an XSL transform stylesheet */
+/* Return the server-relative URI of an XSL transform stylesheet.
+   Comes from the <SVNIndexXSLT> directive. */
+/* ### Is this assumed to be URI-encoded? */
 const char *dav_svn__get_xslt_uri(request_rec *r);
 
-/* Return the master URI (for mirroring) */
-const char * dav_svn__get_master_uri(request_rec *r);
+/* Return the full URL of the master repository (for mirroring).
+   Comes from the <SVNMasterURI> directive. */
+/* ### Is this assumed to be URI-encoded? */
+const char *dav_svn__get_master_uri(request_rec *r);
 
-/* Return the activities db */
-const char * dav_svn__get_activities_db(request_rec *r);
+/* Return the version of the master server (used for mirroring) iff a
+   master URI is in place for this location; otherwise, return NULL.
+   Comes from the <SVNMasterVersion> directive. */
+svn_version_t *dav_svn__get_master_version(request_rec *r);
 
-/* Return the root directory */
-const char * dav_svn__get_root_dir(request_rec *r);
+/* Return the disk path to the activities db.
+   Comes from the <SVNActivitiesDB> directive. */
+const char *dav_svn__get_activities_db(request_rec *r);
+
+/* Return the server-relative URI of the repository root.
+   Comes from the <Location> directive. */
+/* ### Is this assumed to be URI-encoded? */
+const char *dav_svn__get_root_dir(request_rec *r);
+
+/* Return the data compression level to be used over the wire. */
+int dav_svn__get_compression_level(request_rec *r);
+
+/* Return the hook script environment parsed from the configuration. */
+const char *dav_svn__get_hooks_env(request_rec *r);
+
+/** For HTTP protocol v2, these are the new URIs and URI stubs
+    returned to the client in our OPTIONS response.  They all depend
+    on the 'special uri', which is configurable in httpd.conf.  **/
+
+/* Where REPORT requests are sent (typically "!svn/me") */
+const char *dav_svn__get_me_resource_uri(request_rec *r);
+
+/* For accessing revision resources (typically "!svn/rev") */
+const char *dav_svn__get_rev_stub(request_rec *r);
+
+/* For accessing REV/PATH pairs (typically "!svn/bc") */
+const char *dav_svn__get_rev_root_stub(request_rec *r);
+
+/* For accessing transaction resources (typically "!svn/txn") */
+const char *dav_svn__get_txn_stub(request_rec *r);
+
+/* For accessing transaction properties (typically "!svn/txr") */
+const char *dav_svn__get_txn_root_stub(request_rec *r);
+
+/* For accessing transaction resources (typically "!svn/vtxn") */
+const char *dav_svn__get_vtxn_stub(request_rec *r);
+
+/* For accessing transaction properties (typically "!svn/vtxr") */
+const char *dav_svn__get_vtxn_root_stub(request_rec *r);
+
 
 /*** activity.c ***/
 
-/* activity functions for looking up, storing, and deleting
-   ACTIVITY->TXN mappings */
+/* Create a new transaction based on HEAD in REPOS, setting *PTXN_NAME
+   to the name of that transaction.  REVPROPS is an optional hash of
+   const char * property names and const svn_string_t * values which
+   will be set as transactions properties on the transaction this
+   function creates.  Use POOL for allocations.
+
+   NOTE:  This function will overwrite the svn:author property, if
+   any, found in REVPROPS.  */
+dav_error *
+dav_svn__create_txn(const dav_svn_repos *repos,
+                    const char **ptxn_name,
+                    apr_hash_t *revprops,
+                    apr_pool_t *pool);
+
+/* If it exists, abort the transaction named TXN_NAME from REPOS.  Use
+   POOL for allocations. */
+dav_error *
+dav_svn__abort_txn(const dav_svn_repos *repos,
+                   const char *txn_name,
+                   apr_pool_t *pool);
+
+/* Functions for looking up, storing, and deleting ACTIVITY->TXN mappings.  */
 const char *
 dav_svn__get_txn(const dav_svn_repos *repos, const char *activity_id);
 
@@ -350,10 +478,9 @@ dav_svn__store_activity(const dav_svn_repos *repos,
                         const char *activity_id,
                         const char *txn_name);
 
-dav_error *
-dav_svn__create_activity(const dav_svn_repos *repos,
-                         const char **ptxn_name,
-                         apr_pool_t *pool);
+
+/* POST request handler.  (Used by HTTP protocol v2 clients only.)  */
+int dav_svn__method_post(request_rec *r);
 
 
 /*** repos.c ***/
@@ -526,6 +653,7 @@ static const dav_report_elem dav_svn__reports_list[] = {
   { SVN_XML_NAMESPACE, "replay-report" },
   { SVN_XML_NAMESPACE, "get-deleted-rev-report" },
   { SVN_XML_NAMESPACE, SVN_DAV__MERGEINFO_REPORT },
+  { SVN_XML_NAMESPACE, SVN_DAV__INHERITED_PROPS_REPORT },
   { NULL, NULL },
 };
 
@@ -573,10 +701,27 @@ dav_svn__get_deleted_rev_report(const dav_resource *resource,
                                 const apr_xml_doc *doc,
                                 ap_filter_t *output);
 
+dav_error *
+dav_svn__get_inherited_props_report(const dav_resource *resource,
+                                    const apr_xml_doc *doc,
+                                    ap_filter_t *output);
+
+/*** posts/ ***/
+
+/* The various POST handlers, defined in posts/, and used by repos.c.  */
+dav_error *
+dav_svn__post_create_txn(const dav_resource *resource,
+                         svn_skel_t *request_skel,
+                         ap_filter_t *output);
+dav_error *
+dav_svn__post_create_txn_with_props(const dav_resource *resource,
+                                    svn_skel_t *request_skel,
+                                    ap_filter_t *output);
+
 /*** authz.c ***/
 
 /* A baton needed by dav_svn__authz_read_func(). */
-typedef struct
+typedef struct dav_svn__authz_read_baton
 {
   /* The original request, needed to generate a subrequest. */
   request_rec *r;
@@ -614,6 +759,20 @@ dav_svn__allow_read_resource(const dav_resource *resource,
                              apr_pool_t *pool);
 
 
+/* Return TRUE iff the current user (as determined by Apache's
+   authentication system) has permission to read repository REPOS_NAME.
+   This will invoke any authz modules loaded into Apache unless this
+   Subversion location has been configured to bypass those in favor of a
+   direct lookup in the Subversion authz subsystem. Use POOL for any
+   temporary allocation.
+   IMPORTANT: R must be request for DAV_SVN_RESTYPE_PARENTPATH_COLLECTION
+   resource.
+*/
+svn_boolean_t
+dav_svn__allow_list_repos(request_rec *r,
+                          const char *repos_name,
+                          apr_pool_t *pool);
+
 /* If authz is enabled in the specified BATON, return a read authorization
    function. Otherwise, return NULL. */
 svn_repos_authz_func_t
@@ -627,14 +786,35 @@ dav_svn__authz_read_func(dav_svn__authz_read_baton *baton);
    processing.  See dav_new_error_tag for parameter documentation.
    Note that DESC may be null (it's hard to track this down from
    dav_new_error_tag()'s documentation, but see the dav_error type,
-   which says that its desc field may be NULL). */
+   which says that its desc field may be NULL).
+
+   If ERROR_ID is 0, SVN_ERR_RA_DAV_REQUEST_FAILED will be used as a
+   default value for the error code.
+*/
 dav_error *
 dav_svn__new_error_tag(apr_pool_t *pool,
                        int status,
-                       int errno_id,
+                       int error_id,
                        const char *desc,
                        const char *namespace,
                        const char *tagname);
+
+
+/* A wrapper around mod_dav's dav_new_error, mod_dav_svn uses this
+   instead of the mod_dav function to enable special mod_dav_svn specific
+   processing.  See dav_new_error for parameter documentation.
+   Note that DESC may be null (it's hard to track this down from
+   dav_new_error()'s documentation, but see the dav_error type,
+   which says that its desc field may be NULL).
+
+   If ERROR_ID is 0, SVN_ERR_RA_DAV_REQUEST_FAILED will be used as a
+   default value for the error code.
+*/
+dav_error *
+dav_svn__new_error(apr_pool_t *pool,
+                   int status,
+                   int error_id,
+                   const char *desc);
 
 
 /* Convert an svn_error_t into a dav_error, pushing another error based on
@@ -649,9 +829,9 @@ dav_svn__new_error_tag(apr_pool_t *pool,
    string constant. */
 dav_error *
 dav_svn__convert_err(svn_error_t *serr,
-                    int status,
-                    const char *message,
-                    apr_pool_t *pool);
+                     int status,
+                     const char *message,
+                     apr_pool_t *pool);
 
 
 /* Compare (PATH in ROOT) to (PATH in ROOT/PATH's created_rev).
@@ -689,7 +869,8 @@ enum dav_svn__build_what {
   DAV_SVN__BUILD_URI_BC,         /* a Baseline Collection */
   DAV_SVN__BUILD_URI_PUBLIC,     /* the "public" VCR */
   DAV_SVN__BUILD_URI_VERSION,    /* a Version Resource */
-  DAV_SVN__BUILD_URI_VCC         /* a Version Controlled Configuration */
+  DAV_SVN__BUILD_URI_VCC,        /* a Version Controlled Configuration */
+  DAV_SVN__BUILD_URI_REVROOT     /* HTTPv2: Revision Root resource */
 };
 
 const char *
@@ -710,7 +891,7 @@ dav_svn__build_uri(const dav_svn_repos *repos,
    ### URIs which we may need to parse. it also ignores any scheme, host,
    ### and port in the URI and simply assumes it refers to the same server.
 */
-typedef struct {
+typedef struct dav_svn__uri_info {
   svn_revnum_t rev;
   const char *repos_path;
   const char *activity_id;
@@ -722,19 +903,40 @@ dav_svn__simple_parse_uri(dav_svn__uri_info *info,
                           const char *uri,
                           apr_pool_t *pool);
 
+/* Test the request R to determine if we should return the list of
+ * repositories at the parent path.  Only true if SVNListParentPath directive
+ * is 'on' and the request is for our configured root path. */
+svn_boolean_t
+dav_svn__is_parentpath_list(request_rec *r);
 
-int dav_svn__find_ns(apr_array_header_t *namespaces, const char *uri);
+
+int dav_svn__find_ns(const apr_array_header_t *namespaces, const char *uri);
 
 
-/* Output XML data to OUTPUT using BB.  Use FMT as format string for the
-   output. */
-svn_error_t *
-dav_svn__send_xml(apr_bucket_brigade *bb,
-                  ap_filter_t *output,
-                  const char *fmt,
-                  ...)
-       __attribute__((format(printf, 3, 4)));
+
+/*** Brigade I/O wrappers ***/
 
+/* Write LEN bytes from DATA to OUTPUT using BB.  */
+svn_error_t *dav_svn__brigade_write(apr_bucket_brigade *bb,
+                                    ap_filter_t *output,
+                                    const char *buf,
+                                    apr_size_t len);
+
+/* Write NULL-terminated string STR to OUTPUT using BB.  */
+svn_error_t *dav_svn__brigade_puts(apr_bucket_brigade *bb,
+                                   ap_filter_t *output,
+                                   const char *str);
+
+
+/* Write data to OUTPUT using BB, using FMT as the output format string.  */
+svn_error_t *dav_svn__brigade_printf(apr_bucket_brigade *bb,
+                                     ap_filter_t *output,
+                                     const char *fmt,
+                                     ...)
+  __attribute__((format(printf, 3, 4)));
+
+
+
 
 /* Test PATH for canonicalness (defined as "what won't make the
    svn_path_* functions immediately explode"), returning an
@@ -815,10 +1017,33 @@ dav_svn__final_flush_or_error(request_rec *r, apr_bucket_brigade *bb,
                               ap_filter_t *output, dav_error *preferred_err,
                               apr_pool_t *pool);
 
+/* Log a DAV error response.
+ *
+ * NOTE: Copied from mod_dav's dav_log_err which is not public.
+ */
+void dav_svn__log_err(request_rec *r,
+                      dav_error *err,
+                      int level);
+
+/* Send a "standardized" DAV error response based on the ERR's
+ * namespace and tag.
+ *
+ * NOTE:  This was copied pretty much directory from mod_dav's
+ * dav_error_response_tag() function which is, sadly, not public.
+ */
+int dav_svn__error_response_tag(request_rec *r, dav_error *err);
+
+
+/* Set *SKEL to a parsed skel read from the body of request R, and
+ * allocated in POOL.
+ */
+int dav_svn__parse_request_skel(svn_skel_t **skel, request_rec *r,
+                                apr_pool_t *pool);
+
 /*** mirror.c ***/
 
 /* Perform the fixup hook for the R request.  */
-int dav_svn__proxy_merge_fixup(request_rec *r);
+int dav_svn__proxy_request_fixup(request_rec *r);
 
 /* An Apache input filter which rewrites the locations in headers and
    request body.  It reads from filter F using BB data, MODE mode, BLOCK

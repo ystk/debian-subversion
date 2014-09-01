@@ -2,17 +2,22 @@
  * serve.c :  Functions for serving the Subversion protocol
  *
  * ====================================================================
- * Copyright (c) 2000-2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -30,6 +35,7 @@
 
 #include "svn_compat.h"
 #include "svn_private_config.h"  /* For SVN_PATH_LOCAL_SEPARATOR */
+#include "svn_hash.h"
 #include "svn_types.h"
 #include "svn_string.h"
 #include "svn_pools.h"
@@ -37,6 +43,7 @@
 #include "svn_ra.h"              /* for SVN_RA_CAPABILITY_* */
 #include "svn_ra_svn.h"
 #include "svn_repos.h"
+#include "svn_dirent_uri.h"
 #include "svn_path.h"
 #include "svn_time.h"
 #include "svn_config.h"
@@ -46,6 +53,8 @@
 
 #include "private/svn_log.h"
 #include "private/svn_mergeinfo_private.h"
+#include "private/svn_ra_svn_private.h"
+#include "private/svn_fspath.h"
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>   /* For getpid() */
@@ -53,7 +62,7 @@
 
 #include "server.h"
 
-typedef struct {
+typedef struct commit_callback_baton_t {
   apr_pool_t *pool;
   svn_revnum_t *new_rev;
   const char **date;
@@ -61,7 +70,7 @@ typedef struct {
   const char **post_commit_err;
 } commit_callback_baton_t;
 
-typedef struct {
+typedef struct report_driver_baton_t {
   server_baton_t *sb;
   const char *repos_url;  /* Decoded repository URL. */
   void *report_baton;
@@ -73,23 +82,27 @@ typedef struct {
   svn_revnum_t *from_rev;
 } report_driver_baton_t;
 
-typedef struct {
+typedef struct log_baton_t {
   const char *fs_path;
   svn_ra_svn_conn_t *conn;
   int stack_depth;
 } log_baton_t;
 
-typedef struct {
+typedef struct file_revs_baton_t {
   svn_ra_svn_conn_t *conn;
   apr_pool_t *pool;  /* Pool provided in the handler call. */
 } file_revs_baton_t;
 
-typedef struct {
+typedef struct fs_warning_baton_t {
   server_baton_t *server;
   svn_ra_svn_conn_t *conn;
   apr_pool_t *pool;
 } fs_warning_baton_t;
 
+typedef struct authz_baton_t {
+  server_baton_t *server;
+  svn_ra_svn_conn_t *conn;
+} authz_baton_t;
 
 /* Write LEN bytes of ERRSTR to LOG_FILE with svn_io_file_write(). */
 static svn_error_t *
@@ -169,6 +182,21 @@ error_create_and_log(apr_status_t apr_err, svn_error_t *child,
   return err;
 }
 
+/* Log a failure ERR, transmit ERR back to the client (as part of a
+   "failure" notification), consume ERR, and flush the connection. */
+static svn_error_t *
+log_fail_and_flush(svn_error_t *err, server_baton_t *server,
+                   svn_ra_svn_conn_t *conn, apr_pool_t *pool)
+{
+  svn_error_t *io_err;
+
+  log_server_error(err, server, conn, pool);
+  io_err = svn_ra_svn__write_cmd_failure(conn, pool, err);
+  svn_error_clear(err);
+  SVN_ERR(io_err);
+  return svn_ra_svn__flush(conn, pool);
+}
+
 /* Log a client command. */
 static svn_error_t *log_command(server_baton_t *b,
                                 svn_ra_svn_conn_t *conn,
@@ -199,35 +227,60 @@ static svn_error_t *log_command(server_baton_t *b,
   return log_write(b->log_file, line, nbytes, pool);
 }
 
-svn_error_t *load_configs(svn_config_t **cfg,
-                          svn_config_t **pwdb,
-                          svn_authz_t **authzdb,
-                          const char *filename,
-                          svn_boolean_t must_exist,
-                          const char *base,
-                          server_baton_t *server,
-                          svn_ra_svn_conn_t *conn,
-                          apr_pool_t *pool)
+/* Log an authz failure */
+static svn_error_t *
+log_authz_denied(const char *path,
+                 svn_repos_authz_access_t required,
+                 server_baton_t *b,
+                 svn_ra_svn_conn_t *conn,
+                 apr_pool_t *pool)
 {
-  const char *pwdb_path, *authzdb_path;
+  const char *timestr, *remote_host, *line;
+
+  if (b->log_file == NULL)
+    return SVN_NO_ERROR;
+
+  if (!b->user)
+    return SVN_NO_ERROR;
+
+  timestr = svn_time_to_cstring(apr_time_now(), pool);
+  remote_host = svn_ra_svn_conn_remote_host(conn);
+
+  line = apr_psprintf(pool, "%" APR_PID_T_FMT
+                      " %s %s %s %s Authorization Failed %s%s %s" APR_EOL_STR,
+                      getpid(), timestr,
+                      (remote_host ? remote_host : "-"),
+                      (b->user ? b->user : "-"),
+                      b->repos_name,
+                      (required & svn_authz_recursive ? "recursive " : ""),
+                      (required & svn_authz_write ? "write" : "read"),
+                      (path && path[0] ? path : "/"));
+
+  return log_write(b->log_file, line, strlen(line), pool);
+}
+
+
+svn_error_t *load_pwdb_config(server_baton_t *server,
+                              svn_ra_svn_conn_t *conn,
+                              apr_pool_t *pool)
+{
+  const char *pwdb_path;
   svn_error_t *err;
 
-  SVN_ERR(svn_config_read(cfg, filename, must_exist, pool));
-
-  svn_config_get(*cfg, &pwdb_path, SVN_CONFIG_SECTION_GENERAL,
+  svn_config_get(server->cfg, &pwdb_path, SVN_CONFIG_SECTION_GENERAL,
                  SVN_CONFIG_OPTION_PASSWORD_DB, NULL);
 
-  *pwdb = NULL;
+  server->pwdb = NULL;
   if (pwdb_path)
     {
-      pwdb_path = svn_path_join(base, pwdb_path, pool);
+      pwdb_path = svn_dirent_internal_style(pwdb_path, pool);
+      pwdb_path = svn_dirent_join(server->base, pwdb_path, pool);
 
-      err = svn_config_read(pwdb, pwdb_path, TRUE, pool);
+      err = svn_config_read3(&server->pwdb, pwdb_path, TRUE,
+                             FALSE, FALSE, pool);
       if (err)
         {
-          if (server)
-            /* Called by listening server; log error no matter what it is. */
-            log_server_error(err, server, conn, pool);
+          log_server_error(err, server, conn, pool);
 
           /* Because it may be possible to read the pwdb file with some
              access methods and not others, ignore errors reading the pwdb
@@ -236,23 +289,16 @@ svn_error_t *load_configs(svn_config_t **cfg,
              proceed without it anyway.
 
              ### Not entirely sure why SVN_ERR_BAD_FILENAME is checked
-             ### for here.  That seems to have been introduced in r16840,
-             ### and only in r30868 was the APR_EACCES check introduced. */
+             ### for here.  That seems to have been introduced in r856914,
+             ### and only in r870942 was the APR_EACCES check introduced. */
           if (err->apr_err != SVN_ERR_BAD_FILENAME
               && ! APR_STATUS_IS_EACCES(err->apr_err))
             {
-              if (server)
-                {
-                  /* Called by listening server: Now that we've logged
-                   * the error, clear it and return a nice, generic
-                   * error to the user
-                   * (http://subversion.tigris.org/issues/show_bug.cgi?id=2271). */
-                  svn_error_clear(err);
-                  return svn_error_create(SVN_ERR_AUTHN_FAILED, NULL, NULL);
-                }
-              /* Called during startup; return the error, whereupon it
-               * will go to standard error for the admin to see. */
-              return err;
+                /* Now that we've logged the error, clear it and return a
+                 * nice, generic error to the user:
+                 * http://subversion.tigris.org/issues/show_bug.cgi?id=2271 */
+                svn_error_clear(err);
+                return svn_error_create(SVN_ERR_AUTHN_FAILED, NULL, NULL);
             }
           else
             /* Ignore SVN_ERR_BAD_FILENAME and APR_EACCES and proceed. */
@@ -260,33 +306,98 @@ svn_error_t *load_configs(svn_config_t **cfg,
         }
     }
 
+  return SVN_NO_ERROR;
+}
+
+/* Canonicalize *ACCESS_FILE based on the type of argument.  Results are
+ * placed in *ACCESS_FILE.  SERVER baton is used to convert relative paths to
+ * absolute paths rooted at the server root.  REPOS_ROOT is used to calculate
+ * an absolute URL for repos-relative URLs. */
+static svn_error_t *
+canonicalize_access_file(const char **access_file, server_baton_t *server,
+                         const char *repos_root, apr_pool_t *pool)
+{
+  if (svn_path_is_url(*access_file))
+    {
+      *access_file = svn_uri_canonicalize(*access_file, pool);
+    }
+  else if (svn_path_is_repos_relative_url(*access_file))
+    {
+      const char *repos_root_url;
+
+      SVN_ERR(svn_uri_get_file_url_from_dirent(&repos_root_url, repos_root,
+                                               pool));
+      SVN_ERR(svn_path_resolve_repos_relative_url(access_file, *access_file,
+                                                  repos_root_url, pool));
+      *access_file = svn_uri_canonicalize(*access_file, pool);
+    }
+  else
+    {
+      *access_file = svn_dirent_internal_style(*access_file, pool);
+      *access_file = svn_dirent_join(server->base, *access_file, pool);
+    }
+
+  return SVN_NO_ERROR;
+}
+
+svn_error_t *load_authz_config(server_baton_t *server,
+                               svn_ra_svn_conn_t *conn,
+                               const char *repos_root,
+                               apr_pool_t *pool)
+{
+  const char *authzdb_path;
+  const char *groupsdb_path;
+  svn_error_t *err;
+
   /* Read authz configuration. */
-  svn_config_get(*cfg, &authzdb_path, SVN_CONFIG_SECTION_GENERAL,
+  svn_config_get(server->cfg, &authzdb_path, SVN_CONFIG_SECTION_GENERAL,
                  SVN_CONFIG_OPTION_AUTHZ_DB, NULL);
+
+  svn_config_get(server->cfg, &groupsdb_path, SVN_CONFIG_SECTION_GENERAL,
+                 SVN_CONFIG_OPTION_GROUPS_DB, NULL);
+
   if (authzdb_path)
     {
-      authzdb_path = svn_path_join(base, authzdb_path, pool);
-      err = svn_repos_authz_read(authzdb, authzdb_path, TRUE, pool);
+      const char *case_force_val;
+
+      /* Canonicalize and add the base onto the authzdb_path (if needed). */
+      err = canonicalize_access_file(&authzdb_path, server,
+                                     repos_root, pool);
+
+      /* Same for the groupsdb_path if it is present. */
+      if (groupsdb_path && !err)
+        err = canonicalize_access_file(&groupsdb_path, server,
+                                       repos_root, pool);
+
+      if (!err)
+        err = svn_repos_authz_read2(&server->authzdb, authzdb_path,
+                                    groupsdb_path, TRUE, pool);
+
       if (err)
         {
-          if (server)
-            {
-              /* Called by listening server: Log the error, clear it,
-               * and return a nice, generic error to the user
-               * (http://subversion.tigris.org/issues/show_bug.cgi?id=2271). */
-              log_server_error(err, server, conn, pool);
-              svn_error_clear(err);
-              return svn_error_create(SVN_ERR_AUTHZ_INVALID_CONFIG, NULL, NULL);
-            }
+          log_server_error(err, server, conn, pool);
+          svn_error_clear(err);
+          return svn_error_create(SVN_ERR_AUTHZ_INVALID_CONFIG, NULL, NULL);
+        }
+
+      /* Are we going to be case-normalizing usernames when we consult
+       * this authz file? */
+      svn_config_get(server->cfg, &case_force_val, SVN_CONFIG_SECTION_GENERAL,
+                     SVN_CONFIG_OPTION_FORCE_USERNAME_CASE, NULL);
+      if (case_force_val)
+        {
+          if (strcmp(case_force_val, "upper") == 0)
+            server->username_case = CASE_FORCE_UPPER;
+          else if (strcmp(case_force_val, "lower") == 0)
+            server->username_case = CASE_FORCE_LOWER;
           else
-            /* Called during startup; return the error, whereupon it
-             * will go to standard error for the admin to see. */
-            return err;
+            server->username_case = CASE_ASIS;
         }
     }
   else
     {
-      *authzdb = NULL;
+      server->authzdb = NULL;
+      server->username_case = CASE_ASIS;
     }
 
   return SVN_NO_ERROR;
@@ -319,6 +430,18 @@ static svn_error_t *get_fs_path(const char *repos_url, const char *url,
 
 /* --- AUTHENTICATION AND AUTHORIZATION FUNCTIONS --- */
 
+/* Convert TEXT to upper case if TO_UPPERCASE is TRUE, else
+   converts it to lower case. */
+static void convert_case(char *text, svn_boolean_t to_uppercase)
+{
+  char *c = text;
+  while (*c)
+    {
+      *c = (char)(to_uppercase ? apr_toupper(*c) : apr_tolower(*c));
+      ++c;
+    }
+}
+
 /* Set *ALLOWED to TRUE if PATH is accessible in the REQUIRED mode to
    the user described in BATON according to the authz rules in BATON.
    Use POOL for temporary allocations only.  If no authz rules are
@@ -327,6 +450,7 @@ static svn_error_t *authz_check_access(svn_boolean_t *allowed,
                                        const char *path,
                                        svn_repos_authz_access_t required,
                                        server_baton_t *b,
+                                       svn_ra_svn_conn_t *conn,
                                        apr_pool_t *pool)
 {
   /* If authz cannot be performed, grant access.  This is NOT the same
@@ -345,12 +469,29 @@ static svn_error_t *authz_check_access(svn_boolean_t *allowed,
      absolute path. Passing such a malformed path to the authz
      routines throws them into an infinite loop and makes them miss
      ACLs. */
-  if (path && *path != '/')
-    path = svn_path_join("/", path, pool);
+  if (path)
+    path = svn_fspath__canonicalize(path, pool);
 
-  return svn_repos_authz_check_access(b->authzdb, b->authz_repos_name,
-                                      path, b->user, required,
-                                      allowed, pool);
+  /* If we have a username, and we've not yet used it + any username
+     case normalization that might be requested to determine "the
+     username we used for authz purposes", do so now. */
+  if (b->user && (! b->authz_user))
+    {
+      char *authz_user = apr_pstrdup(b->pool, b->user);
+      if (b->username_case == CASE_FORCE_UPPER)
+        convert_case(authz_user, TRUE);
+      else if (b->username_case == CASE_FORCE_LOWER)
+        convert_case(authz_user, FALSE);
+      b->authz_user = authz_user;
+    }
+
+  SVN_ERR(svn_repos_authz_check_access(b->authzdb, b->authz_repos_name,
+                                       path, b->authz_user, required,
+                                       allowed, pool));
+  if (!*allowed)
+    SVN_ERR(log_authz_denied(path, required, b, conn, pool));
+
+  return SVN_NO_ERROR;
 }
 
 /* Set *ALLOWED to TRUE if PATH is readable by the user described in
@@ -363,9 +504,10 @@ static svn_error_t *authz_check_access_cb(svn_boolean_t *allowed,
                                           void *baton,
                                           apr_pool_t *pool)
 {
-  server_baton_t *sb = baton;
+  authz_baton_t *sb = baton;
 
-  return authz_check_access(allowed, path, svn_authz_read, sb, pool);
+  return authz_check_access(allowed, path, svn_authz_read,
+                            sb->server, sb->conn, pool);
 }
 
 /* If authz is enabled in the specified BATON, return a read authorization
@@ -389,9 +531,10 @@ static svn_error_t *authz_commit_cb(svn_repos_authz_access_t required,
                                     void *baton,
                                     apr_pool_t *pool)
 {
-  server_baton_t *sb = baton;
+  authz_baton_t *sb = baton;
 
-  return authz_check_access(allowed, path, required, sb, pool);
+  return authz_check_access(allowed, path, required,
+                            sb->server, sb->conn, pool);
 }
 
 
@@ -421,11 +564,11 @@ static svn_error_t *send_mechs(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                                svn_boolean_t needs_username)
 {
   if (!needs_username && get_access(b, UNAUTHENTICATED) >= required)
-    SVN_ERR(svn_ra_svn_write_word(conn, pool, "ANONYMOUS"));
+    SVN_ERR(svn_ra_svn__write_word(conn, pool, "ANONYMOUS"));
   if (b->tunnel_user && get_access(b, AUTHENTICATED) >= required)
-    SVN_ERR(svn_ra_svn_write_word(conn, pool, "EXTERNAL"));
+    SVN_ERR(svn_ra_svn__write_word(conn, pool, "EXTERNAL"));
   if (b->pwdb && get_access(b, AUTHENTICATED) >= required)
-    SVN_ERR(svn_ra_svn_write_word(conn, pool, "CRAM-MD5"));
+    SVN_ERR(svn_ra_svn__write_word(conn, pool, "CRAM-MD5"));
   return SVN_NO_ERROR;
 }
 
@@ -498,10 +641,10 @@ static svn_error_t *auth(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
       && b->tunnel_user && strcmp(mech, "EXTERNAL") == 0)
     {
       if (*mecharg && strcmp(mecharg, b->tunnel_user) != 0)
-        return svn_ra_svn_write_tuple(conn, pool, "w(c)", "failure",
-                                      "Requested username does not match");
+        return svn_ra_svn__write_tuple(conn, pool, "w(c)", "failure",
+                                       "Requested username does not match");
       b->user = b->tunnel_user;
-      SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w()", "success"));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w()", "success"));
       *success = TRUE;
       return SVN_NO_ERROR;
     }
@@ -509,7 +652,7 @@ static svn_error_t *auth(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   if (get_access(b, UNAUTHENTICATED) >= required
       && strcmp(mech, "ANONYMOUS") == 0 && ! needs_username)
     {
-      SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w()", "success"));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w()", "success"));
       *success = TRUE;
       return SVN_NO_ERROR;
     }
@@ -522,7 +665,7 @@ static svn_error_t *auth(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
       return SVN_NO_ERROR;
     }
 
-  return svn_ra_svn_write_tuple(conn, pool, "w(c)", "failure",
+  return svn_ra_svn__write_tuple(conn, pool, "w(c)", "failure",
                                 "Must authenticate with listed mechanism");
 }
 
@@ -535,12 +678,12 @@ internal_auth_request(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_boolean_t success;
   const char *mech, *mecharg;
 
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w((!", "success"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w((!", "success"));
   SVN_ERR(send_mechs(conn, pool, b, required, needs_username));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!)c)", b->realm));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)c)", b->realm));
   do
     {
-      SVN_ERR(svn_ra_svn_read_tuple(conn, pool, "w(?c)", &mech, &mecharg));
+      SVN_ERR(svn_ra_svn__read_tuple(conn, pool, "w(?c)", &mech, &mecharg));
       if (!*mech)
         break;
       SVN_ERR(auth(conn, pool, mech, mecharg, b, required, needs_username,
@@ -573,7 +716,7 @@ static svn_error_t *auth_request(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 static svn_error_t *trivial_auth_request(svn_ra_svn_conn_t *conn,
                                          apr_pool_t *pool, server_baton_t *b)
 {
-  return svn_ra_svn_write_cmd_response(conn, pool, "()c", "");
+  return svn_ra_svn__write_cmd_response(conn, pool, "()c", "");
 }
 
 /* Ensure that the client has the REQUIRED access by checking the
@@ -600,7 +743,7 @@ static svn_boolean_t lookup_access(apr_pool_t *pool,
   svn_error_t *err;
 
   /* Get authz's opinion on the access. */
-  err = authz_check_access(&authorized, path, required, baton, pool);
+  err = authz_check_access(&authorized, path, required, baton, conn, pool);
 
   /* If an error made lookup fail, deny access. */
   if (err)
@@ -696,12 +839,12 @@ static svn_error_t *set_path(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_depth_t depth = svn_depth_infinity;
   svn_boolean_t start_empty;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "crb?(?c)?w",
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "crb?(?c)?w",
                                  &path, &rev, &start_empty, &lock_token,
                                  &depth_word));
   if (depth_word)
     depth = svn_depth_from_word(depth_word);
-  path = svn_path_canonicalize(path, pool);
+  path = svn_relpath_canonicalize(path, pool);
   if (b->from_rev && strcmp(path, "") == 0)
     *b->from_rev = rev;
   if (!b->err)
@@ -719,8 +862,8 @@ static svn_error_t *delete_path(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   report_driver_baton_t *b = baton;
   const char *path;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c", &path));
-  path = svn_path_canonicalize(path, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c", &path));
+  path = svn_relpath_canonicalize(path, pool);
   if (!b->err)
     b->err = svn_repos_delete_path(b->report_baton, path, pool);
   return SVN_NO_ERROR;
@@ -736,16 +879,20 @@ static svn_error_t *link_path(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   /* Default to infinity, for old clients that don't send depth. */
   svn_depth_t depth = svn_depth_infinity;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "ccrb?(?c)?w",
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "ccrb?(?c)?w",
                                  &path, &url, &rev, &start_empty,
                                  &lock_token, &depth_word));
-  path = svn_path_canonicalize(path, pool);
-  url = svn_path_uri_decode(svn_path_canonicalize(url, pool), pool);
+
+  /* ### WHAT?!  The link path is an absolute URL?!  Didn't see that
+     coming...   -- cmpilato  */
+  path = svn_relpath_canonicalize(path, pool);
+  url = svn_uri_canonicalize(url, pool);
   if (depth_word)
     depth = svn_depth_from_word(depth_word);
   if (!b->err)
     b->err = get_fs_path(svn_path_uri_decode(b->repos_url, pool),
-                         url, &fs_path);
+                         svn_path_uri_decode(url, pool),
+                         &fs_path);
   if (!b->err)
     b->err = svn_repos_link_path3(b->report_baton, path, fs_path, rev,
                                   depth, start_empty, lock_token, pool);
@@ -766,7 +913,7 @@ static svn_error_t *finish_report(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 }
 
 static svn_error_t *abort_report(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
-                                   apr_array_header_t *params, void *baton)
+                                 apr_array_header_t *params, void *baton)
 {
   report_driver_baton_t *b = baton;
 
@@ -811,17 +958,22 @@ static svn_error_t *accept_report(svn_boolean_t *only_empty_entry,
   void *edit_baton, *report_baton;
   report_driver_baton_t rb;
   svn_error_t *err;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   /* Make an svn_repos report baton.  Tell it to drive the network editor
    * when the report is complete. */
   svn_ra_svn_get_editor(&editor, &edit_baton, conn, pool, NULL, NULL);
-  SVN_CMD_ERR(svn_repos_begin_report2(&report_baton, rev, b->repos,
+  SVN_CMD_ERR(svn_repos_begin_report3(&report_baton, rev, b->repos,
                                       b->fs_path->data, target, tgt_path,
                                       text_deltas, depth, ignore_ancestry,
                                       send_copyfrom_args,
                                       editor, edit_baton,
                                       authz_check_access_cb_func(b),
-                                      b, pool));
+                                      &ab, svn_ra_svn_zero_copy_limit(conn),
+                                      pool));
 
   rb.sb = b;
   rb.repos_url = svn_path_uri_decode(b->repos_url, pool);
@@ -832,7 +984,7 @@ static svn_error_t *accept_report(svn_boolean_t *only_empty_entry,
   rb.from_rev = from_rev;
   if (from_rev)
     *from_rev = SVN_INVALID_REVNUM;
-  err = svn_ra_svn_handle_commands2(conn, pool, report_commands, &rb, TRUE);
+  err = svn_ra_svn__handle_commands2(conn, pool, report_commands, &rb, TRUE);
   if (err)
     {
       /* Network or protocol error while handling commands. */
@@ -844,7 +996,7 @@ static svn_error_t *accept_report(svn_boolean_t *only_empty_entry,
       /* Some failure during the reporting or editing operations. */
       SVN_CMD_ERR(rb.err);
     }
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   if (only_empty_entry)
     *only_empty_entry = rb.entry_counter == 1 && rb.only_empty_entries;
@@ -858,7 +1010,7 @@ static svn_error_t *accept_report(svn_boolean_t *only_empty_entry,
  * values. */
 static svn_error_t *write_prop_diffs(svn_ra_svn_conn_t *conn,
                                      apr_pool_t *pool,
-                                     apr_array_header_t *propdiffs)
+                                     const apr_array_header_t *propdiffs)
 {
   int i;
 
@@ -866,8 +1018,8 @@ static svn_error_t *write_prop_diffs(svn_ra_svn_conn_t *conn,
     {
       const svn_prop_t *prop = &APR_ARRAY_IDX(propdiffs, i, svn_prop_t);
 
-      SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "c(?s)",
-                                     prop->name, prop->value));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "c(?s)",
+                                      prop->name, prop->value));
     }
 
   return SVN_NO_ERROR;
@@ -883,41 +1035,58 @@ static svn_error_t *write_lock(svn_ra_svn_conn_t *conn,
   cdate = svn_time_to_cstring(lock->creation_date, pool);
   edate = lock->expiration_date
     ? svn_time_to_cstring(lock->expiration_date, pool) : NULL;
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "ccc(?c)c(?c)", lock->path,
-                                 lock->token, lock->owner, lock->comment,
-                                 cdate, edate));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "ccc(?c)c(?c)", lock->path,
+                                  lock->token, lock->owner, lock->comment,
+                                  cdate, edate));
 
   return SVN_NO_ERROR;
 }
 
 /* ### This really belongs in libsvn_repos. */
-/* Get the properties for a path, with hardcoded committed-info values. */
-static svn_error_t *get_props(apr_hash_t **props, svn_fs_root_t *root,
-                              const char *path, apr_pool_t *pool)
+/* Get the explicit properties and/or inherited properties for a PATH in
+   ROOT, with hardcoded committed-info values. */
+static svn_error_t *
+get_props(apr_hash_t **props,
+          apr_array_header_t **iprops,
+          authz_baton_t *b,
+          svn_fs_root_t *root,
+          const char *path,
+          apr_pool_t *pool)
 {
-  svn_string_t *str;
-  svn_revnum_t crev;
-  const char *cdate, *cauthor, *uuid;
+  /* Get the explicit properties. */
+  if (props)
+    {
+      svn_string_t *str;
+      svn_revnum_t crev;
+      const char *cdate, *cauthor, *uuid;
 
-  /* Get the properties. */
-  SVN_ERR(svn_fs_node_proplist(props, root, path, pool));
+      SVN_ERR(svn_fs_node_proplist(props, root, path, pool));
 
-  /* Hardcode the values for the committed revision, date, and author. */
-  SVN_ERR(svn_repos_get_committed_info(&crev, &cdate, &cauthor, root,
-                                       path, pool));
-  str = svn_string_create(apr_psprintf(pool, "%ld", crev),
-                          pool);
-  apr_hash_set(*props, SVN_PROP_ENTRY_COMMITTED_REV, APR_HASH_KEY_STRING, str);
-  str = (cdate) ? svn_string_create(cdate, pool) : NULL;
-  apr_hash_set(*props, SVN_PROP_ENTRY_COMMITTED_DATE, APR_HASH_KEY_STRING,
-               str);
-  str = (cauthor) ? svn_string_create(cauthor, pool) : NULL;
-  apr_hash_set(*props, SVN_PROP_ENTRY_LAST_AUTHOR, APR_HASH_KEY_STRING, str);
+      /* Hardcode the values for the committed revision, date, and author. */
+      SVN_ERR(svn_repos_get_committed_info(&crev, &cdate, &cauthor, root,
+                                           path, pool));
+      str = svn_string_create(apr_psprintf(pool, "%ld", crev),
+                              pool);
+      svn_hash_sets(*props, SVN_PROP_ENTRY_COMMITTED_REV, str);
+      str = (cdate) ? svn_string_create(cdate, pool) : NULL;
+      svn_hash_sets(*props, SVN_PROP_ENTRY_COMMITTED_DATE, str);
+      str = (cauthor) ? svn_string_create(cauthor, pool) : NULL;
+      svn_hash_sets(*props, SVN_PROP_ENTRY_LAST_AUTHOR, str);
 
-  /* Hardcode the values for the UUID. */
-  SVN_ERR(svn_fs_get_uuid(svn_fs_root_fs(root), &uuid, pool));
-  str = (uuid) ? svn_string_create(uuid, pool) : NULL;
-  apr_hash_set(*props, SVN_PROP_ENTRY_UUID, APR_HASH_KEY_STRING, str);
+      /* Hardcode the values for the UUID. */
+      SVN_ERR(svn_fs_get_uuid(svn_fs_root_fs(root), &uuid, pool));
+      str = (uuid) ? svn_string_create(uuid, pool) : NULL;
+      svn_hash_sets(*props, SVN_PROP_ENTRY_UUID, str);
+    }
+
+  /* Get any inherited properties the user is authorized to. */
+  if (iprops)
+    {
+      SVN_ERR(svn_repos_fs_get_inherited_props(
+                iprops, root, path, NULL,
+                authz_check_access_cb_func(b->server),
+                b, pool, pool));
+    }
 
   return SVN_NO_ERROR;
 }
@@ -930,14 +1099,15 @@ static svn_error_t *reparent(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   const char *url;
   const char *fs_path;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c", &url));
-  url = svn_path_uri_decode(svn_path_canonicalize(url, pool), pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c", &url));
+  url = svn_uri_canonicalize(url, pool);
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_CMD_ERR(get_fs_path(svn_path_uri_decode(b->repos_url, pool),
-                          url, &fs_path));
+                          svn_path_uri_decode(url, pool),
+                          &fs_path));
   SVN_ERR(log_command(b, conn, pool, "%s", svn_log__reparent(fs_path, pool)));
   svn_stringbuf_set(b->fs_path, fs_path);
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
   return SVN_NO_ERROR;
 }
 
@@ -951,7 +1121,7 @@ static svn_error_t *get_latest_rev(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_CMD_ERR(svn_fs_youngest_rev(&rev, b->fs, pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "r", rev));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "r", rev));
   return SVN_NO_ERROR;
 }
 
@@ -963,13 +1133,77 @@ static svn_error_t *get_dated_rev(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   apr_time_t tm;
   const char *timestr;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c", &timestr));
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c", &timestr));
   SVN_ERR(log_command(b, conn, pool, "get-dated-rev %s", timestr));
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_CMD_ERR(svn_time_from_cstring(&tm, timestr, pool));
   SVN_CMD_ERR(svn_repos_dated_revision(&rev, b->repos, tm, pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "r", rev));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "r", rev));
+  return SVN_NO_ERROR;
+}
+
+/* Common logic for change_rev_prop() and change_rev_prop2(). */
+static svn_error_t *do_change_rev_prop(svn_ra_svn_conn_t *conn,
+                                       server_baton_t *b,
+                                       svn_revnum_t rev,
+                                       const char *name,
+                                       const svn_string_t *const *old_value_p,
+                                       const svn_string_t *value,
+                                       apr_pool_t *pool)
+{
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(must_have_access(conn, pool, b, svn_authz_write, NULL, FALSE));
+  SVN_ERR(log_command(b, conn, pool, "%s",
+                      svn_log__change_rev_prop(rev, name, pool)));
+  SVN_CMD_ERR(svn_repos_fs_change_rev_prop4(b->repos, rev, b->user,
+                                            name, old_value_p, value,
+                                            TRUE, TRUE,
+                                            authz_check_access_cb_func(b), &ab,
+                                            pool));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
+
+  return SVN_NO_ERROR;
+}
+
+static svn_error_t *change_rev_prop2(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
+                                     apr_array_header_t *params, void *baton)
+{
+  server_baton_t *b = baton;
+  svn_revnum_t rev;
+  const char *name;
+  svn_string_t *value;
+  const svn_string_t *const *old_value_p;
+  svn_string_t *old_value;
+  svn_boolean_t dont_care;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "rc(?s)(b?s)",
+                                  &rev, &name, &value,
+                                  &dont_care, &old_value));
+
+  /* Argument parsing. */
+  if (dont_care)
+    old_value_p = NULL;
+  else
+    old_value_p = (const svn_string_t *const *)&old_value;
+
+  /* Input validation. */
+  if (dont_care && old_value)
+    {
+      svn_error_t *err;
+      err = svn_error_create(SVN_ERR_INCORRECT_PARAMS, NULL,
+                             "'previous-value' and 'dont-care' cannot both be "
+                             "set in 'change-rev-prop2' request");
+      return log_fail_and_flush(err, b, conn, pool);
+    }
+
+  /* Do it. */
+  SVN_ERR(do_change_rev_prop(conn, b, rev, name, old_value_p, value, pool));
+
   return SVN_NO_ERROR;
 }
 
@@ -983,16 +1217,10 @@ static svn_error_t *change_rev_prop(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   /* Because the revprop value was at one time mandatory, the usual
      optional element pattern "(?s)" isn't used. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "rc?s", &rev, &name, &value));
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "rc?s", &rev, &name, &value));
 
-  SVN_ERR(must_have_access(conn, pool, b, svn_authz_write, NULL, FALSE));
-  SVN_ERR(log_command(b, conn, pool, "%s",
-                      svn_log__change_rev_prop(rev, name, pool)));
-  SVN_CMD_ERR(svn_repos_fs_change_rev_prop3(b->repos, rev, b->user,
-                                            name, value, TRUE, TRUE,
-                                            authz_check_access_cb_func(b), b,
-                                            pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(do_change_rev_prop(conn, b, rev, name, NULL, value, pool));
+
   return SVN_NO_ERROR;
 }
 
@@ -1002,17 +1230,21 @@ static svn_error_t *rev_proplist(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   server_baton_t *b = baton;
   svn_revnum_t rev;
   apr_hash_t *props;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "r", &rev));
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "r", &rev));
   SVN_ERR(log_command(b, conn, pool, "%s", svn_log__rev_proplist(rev, pool)));
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_CMD_ERR(svn_repos_fs_revision_proplist(&props, b->repos, rev,
-                                             authz_check_access_cb_func(b), b,
+                                             authz_check_access_cb_func(b), &ab,
                                              pool));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w((!", "success"));
-  SVN_ERR(svn_ra_svn_write_proplist(conn, pool, props));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w((!", "success"));
+  SVN_ERR(svn_ra_svn__write_proplist(conn, pool, props));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!))"));
   return SVN_NO_ERROR;
 }
 
@@ -1023,16 +1255,20 @@ static svn_error_t *rev_prop(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_revnum_t rev;
   const char *name;
   svn_string_t *value;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "rc", &rev, &name));
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "rc", &rev, &name));
   SVN_ERR(log_command(b, conn, pool, "%s",
                       svn_log__rev_prop(rev, name, pool)));
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_CMD_ERR(svn_repos_fs_revision_prop(&value, b->repos, rev, name,
-                                         authz_check_access_cb_func(b), b,
+                                         authz_check_access_cb_func(b), &ab,
                                          pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "(?s)", value));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "(?s)", value));
   return SVN_NO_ERROR;
 }
 
@@ -1059,7 +1295,7 @@ static svn_error_t *commit_done(const svn_commit_info_t *commit_info,
  * to the client.  Use POOL for temporary allocations only.
  */
 static svn_error_t *add_lock_tokens(svn_ra_svn_conn_t *conn,
-                                    apr_array_header_t *lock_tokens,
+                                    const apr_array_header_t *lock_tokens,
                                     server_baton_t *sb,
                                     apr_pool_t *pool)
 {
@@ -1093,9 +1329,9 @@ static svn_error_t *add_lock_tokens(svn_ra_svn_conn_t *conn,
                                 "Lock token isn't a string");
 
       path = path_item->u.string->data;
-      full_path = svn_path_join(sb->fs_path->data,
-                                svn_path_canonicalize(path, pool),
-                                pool);
+      full_path = svn_fspath__join(sb->fs_path->data,
+                                   svn_relpath_canonicalize(path, pool),
+                                   pool);
 
       if (! lookup_access(pool, sb, conn, svn_authz_write,
                           full_path, TRUE))
@@ -1111,7 +1347,7 @@ static svn_error_t *add_lock_tokens(svn_ra_svn_conn_t *conn,
 
 /* Unlock the paths with lock tokens in LOCK_TOKENS, ignoring any errors.
    LOCK_TOKENS contains svn_ra_svn_item_t elements, assumed to be lists. */
-static svn_error_t *unlock_paths(apr_array_header_t *lock_tokens,
+static svn_error_t *unlock_paths(const apr_array_header_t *lock_tokens,
                                  server_baton_t *sb,
                                  svn_ra_svn_conn_t *conn,
                                  apr_pool_t *pool)
@@ -1135,9 +1371,9 @@ static svn_error_t *unlock_paths(apr_array_header_t *lock_tokens,
       path = path_item->u.string->data;
       token = token_item->u.string->data;
 
-      full_path = svn_path_join(sb->fs_path->data,
-                                svn_path_canonicalize(path, iterpool),
-                                iterpool);
+      full_path = svn_fspath__join(sb->fs_path->data,
+                                   svn_relpath_canonicalize(path, iterpool),
+                                   iterpool);
 
       /* The lock may have become defunct after the commit, so ignore such
          errors. */
@@ -1169,12 +1405,16 @@ static svn_error_t *commit(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_boolean_t aborted;
   commit_callback_baton_t ccb;
   svn_revnum_t new_rev;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   if (params->nelts == 1)
     {
       /* Clients before 1.2 don't send lock-tokens, keep-locks,
          and rev-props fields. */
-      SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c", &log_msg));
+      SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c", &log_msg));
       lock_tokens = NULL;
       keep_locks = TRUE;
       revprop_list = NULL;
@@ -1182,9 +1422,9 @@ static svn_error_t *commit(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   else
     {
       /* Clients before 1.5 don't send the rev-props field. */
-      SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "clb?l", &log_msg,
-                                     &lock_tokens, &keep_locks,
-                                     &revprop_list));
+      SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "clb?l", &log_msg,
+                                      &lock_tokens, &keep_locks,
+                                      &revprop_list));
     }
 
   /* The handling for locks is a little problematic, because the
@@ -1201,19 +1441,20 @@ static svn_error_t *commit(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   if (lock_tokens && lock_tokens->nelts)
     SVN_CMD_ERR(add_lock_tokens(conn, lock_tokens, b, pool));
 
+  /* Ignore LOG_MSG, per the protocol.  See ra_svn_commit(). */
   if (revprop_list)
-    SVN_ERR(svn_ra_svn_parse_proplist(revprop_list, pool, &revprop_table));
+    SVN_ERR(svn_ra_svn__parse_proplist(revprop_list, pool, &revprop_table));
   else
     {
       revprop_table = apr_hash_make(pool);
-      apr_hash_set(revprop_table, SVN_PROP_REVISION_LOG, APR_HASH_KEY_STRING,
-                   svn_string_create(log_msg, pool));
+      svn_hash_sets(revprop_table, SVN_PROP_REVISION_LOG,
+                    svn_string_create(log_msg, pool));
     }
 
   /* Get author from the baton, making sure clients can't circumvent
      the authentication via the revision props. */
-  apr_hash_set(revprop_table, SVN_PROP_REVISION_AUTHOR, APR_HASH_KEY_STRING,
-               b->user ? svn_string_create(b->user, pool) : NULL);
+  svn_hash_sets(revprop_table, SVN_PROP_REVISION_AUTHOR,
+                b->user ? svn_string_create(b->user, pool) : NULL);
 
   ccb.pool = pool;
   ccb.new_rev = &new_rev;
@@ -1226,9 +1467,10 @@ static svn_error_t *commit(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                svn_path_uri_decode(b->repos_url, pool),
                b->fs_path->data, revprop_table,
                commit_done, &ccb,
-               authz_commit_cb, baton, pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
-  SVN_ERR(svn_ra_svn_drive_editor(conn, pool, editor, edit_baton, &aborted));
+               authz_commit_cb, &ab, pool));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn_drive_editor2(conn, pool, editor, edit_baton,
+                                   &aborted, FALSE));
   if (!aborted)
     {
       SVN_ERR(log_command(b, conn, pool, "%s",
@@ -1247,8 +1489,8 @@ static svn_error_t *commit(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
       if (! keep_locks && lock_tokens && lock_tokens->nelts)
         SVN_ERR(unlock_paths(lock_tokens, b, conn, pool));
 
-      SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "r(?c)(?c)(?c)",
-                                     new_rev, date, author, post_commit_err));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "r(?c)(?c)(?c)",
+                                      new_rev, date, author, post_commit_err));
 
       if (! b->tunnel)
         SVN_ERR(svn_fs_deltify_revision(b->fs, new_rev, pool));
@@ -1265,19 +1507,30 @@ static svn_error_t *get_file(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_fs_root_t *root;
   svn_stream_t *contents;
   apr_hash_t *props = NULL;
+  apr_array_header_t *inherited_props;
   svn_string_t write_str;
   char buf[4096];
   apr_size_t len;
   svn_boolean_t want_props, want_contents;
+  apr_uint64_t wants_inherited_props;
   svn_checksum_t *checksum;
   svn_error_t *err, *write_err;
+  int i;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   /* Parse arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?r)bb", &path, &rev,
-                                 &want_props, &want_contents));
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?r)bb?B", &path, &rev,
+                                  &want_props, &want_contents,
+                                  &wants_inherited_props));
 
-  full_path = svn_path_join(b->fs_path->data,
-                            svn_path_canonicalize(path, pool), pool);
+  if (wants_inherited_props == SVN_RA_SVN_UNSPECIFIED_NUMBER)
+    wants_inherited_props = FALSE;
+
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   /* Check authorizations */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_read,
@@ -1295,16 +1548,44 @@ static svn_error_t *get_file(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   SVN_CMD_ERR(svn_fs_file_checksum(&checksum, svn_checksum_md5, root,
                                    full_path, TRUE, pool));
   hex_digest = svn_checksum_to_cstring_display(checksum, pool);
-  if (want_props)
-    SVN_CMD_ERR(get_props(&props, root, full_path, pool));
+
+  /* Fetch the file's explicit and/or inherited properties if
+     requested.  Although the wants-iprops boolean was added to the
+     protocol in 1.8 a standard 1.8 client never requests iprops. */
+  if (want_props || wants_inherited_props)
+    SVN_CMD_ERR(get_props(want_props ? &props : NULL,
+                          wants_inherited_props ? &inherited_props : NULL,
+                          &ab, root, full_path,
+                          pool));
   if (want_contents)
     SVN_CMD_ERR(svn_fs_file_contents(&contents, root, full_path, pool));
 
   /* Send successful command response with revision and props. */
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w((?c)r(!", "success",
-                                 hex_digest, rev));
-  SVN_ERR(svn_ra_svn_write_proplist(conn, pool, props));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w((?c)r(!", "success",
+                                  hex_digest, rev));
+  SVN_ERR(svn_ra_svn__write_proplist(conn, pool, props));
+
+  if (wants_inherited_props)
+    {
+      apr_pool_t *iterpool = svn_pool_create(pool);
+
+      SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)(?!"));
+      for (i = 0; i < inherited_props->nelts; i++)
+        {
+          svn_prop_inherited_item_t *iprop =
+            APR_ARRAY_IDX(inherited_props, i, svn_prop_inherited_item_t *);
+
+          svn_pool_clear(iterpool);
+          SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!(c(!",
+                                          iprop->path_or_url));
+          SVN_ERR(svn_ra_svn__write_proplist(conn, iterpool, iprop->prop_hash));
+          SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!))!",
+                                          iprop->path_or_url));
+        }
+      svn_pool_destroy(iterpool);
+    }
+
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!))"));
 
   /* Now send the file's contents. */
   if (want_contents)
@@ -1320,7 +1601,7 @@ static svn_error_t *get_file(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
             {
               write_str.data = buf;
               write_str.len = len;
-              SVN_ERR(svn_ra_svn_write_string(conn, pool, &write_str));
+              SVN_ERR(svn_ra_svn__write_string(conn, pool, &write_str));
             }
           if (len < sizeof(buf))
             {
@@ -1328,14 +1609,14 @@ static svn_error_t *get_file(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
               break;
             }
         }
-      write_err = svn_ra_svn_write_cstring(conn, pool, "");
+      write_err = svn_ra_svn__write_cstring(conn, pool, "");
       if (write_err)
         {
           svn_error_clear(err);
           return write_err;
         }
       SVN_CMD_ERR(err);
-      SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+      SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
     }
 
   return SVN_NO_ERROR;
@@ -1345,25 +1626,31 @@ static svn_error_t *get_dir(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                             apr_array_header_t *params, void *baton)
 {
   server_baton_t *b = baton;
-  const char *path, *full_path, *file_path, *name, *cauthor, *cdate;
+  const char *path, *full_path;
   svn_revnum_t rev;
-  apr_hash_t *entries, *props = NULL, *file_props;
+  apr_hash_t *entries, *props = NULL;
+  apr_array_header_t *inherited_props;
   apr_hash_index_t *hi;
-  svn_fs_dirent_t *fsent;
-  svn_dirent_t *entry;
-  const void *key;
-  void *val;
   svn_fs_root_t *root;
   apr_pool_t *subpool;
   svn_boolean_t want_props, want_contents;
+  apr_uint64_t wants_inherited_props;
   apr_uint64_t dirent_fields;
   apr_array_header_t *dirent_fields_list = NULL;
   svn_ra_svn_item_t *elt;
   int i;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?r)bb?l", &path, &rev,
-                                 &want_props, &want_contents,
-                                 &dirent_fields_list));
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?r)bb?l?B", &path, &rev,
+                                  &want_props, &want_contents,
+                                  &dirent_fields_list,
+                                  &wants_inherited_props));
+
+  if (wants_inherited_props == SVN_RA_SVN_UNSPECIFIED_NUMBER)
+    wants_inherited_props = FALSE;
 
   if (! dirent_fields_list)
     {
@@ -1396,8 +1683,8 @@ static svn_error_t *get_dir(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         }
     }
 
-  full_path = svn_path_join(b->fs_path->data,
-                            svn_path_canonicalize(path, pool), pool);
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   /* Check authorizations */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_read,
@@ -1414,13 +1701,26 @@ static svn_error_t *get_dir(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   /* Fetch the root of the appropriate revision. */
   SVN_CMD_ERR(svn_fs_revision_root(&root, b->fs, rev, pool));
 
-  /* Fetch the directory properties if requested. */
-  if (want_props)
-    SVN_CMD_ERR(get_props(&props, root, full_path, pool));
+  /* Fetch the directory's explicit and/or inherited properties if
+     requested.  Although the wants-iprops boolean was added to the
+     protocol in 1.8 a standard 1.8 client never requests iprops. */
+  if (want_props || wants_inherited_props)
+    SVN_CMD_ERR(get_props(want_props ? &props : NULL,
+                          wants_inherited_props ? &inherited_props : NULL,
+                          &ab, root, full_path,
+                          pool));
 
-  /* Fetch the directory entries if requested. */
+  /* Begin response ... */
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w(r(!", "success", rev));
+  SVN_ERR(svn_ra_svn__write_proplist(conn, pool, props));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)(!"));
+
+  /* Fetch the directory entries if requested and send them immediately. */
   if (want_contents)
     {
+      /* Use epoch for a placeholder for a missing date.  */
+      const char *missing_date = svn_time_to_cstring(0, pool);
+
       SVN_CMD_ERR(svn_fs_dir_entries(&entries, root, full_path, pool));
 
       /* Transform the hash table's FS entries into dirents.  This probably
@@ -1428,45 +1728,46 @@ static svn_error_t *get_dir(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
       subpool = svn_pool_create(pool);
       for (hi = apr_hash_first(pool, entries); hi; hi = apr_hash_next(hi))
         {
-          apr_hash_this(hi, &key, NULL, &val);
-          name = key;
-          fsent = val;
+          const char *name = svn__apr_hash_index_key(hi);
+          svn_fs_dirent_t *fsent = svn__apr_hash_index_val(hi);
+          const char *file_path;
+
+          /* The fields in the entry tuple.  */
+          svn_node_kind_t entry_kind = svn_node_none;
+          svn_filesize_t entry_size = 0;
+          svn_boolean_t has_props = FALSE;
+          /* If 'created rev' was not requested, send 0.  We can't use
+           * SVN_INVALID_REVNUM as the tuple field is not optional.
+           * See the email thread on dev@, 2012-03-28, subject
+           * "buildbot failure in ASF Buildbot on svn-slik-w2k3-x64-ra",
+           * <http://svn.haxx.se/dev/archive-2012-03/0655.shtml>. */
+          svn_revnum_t created_rev = 0;
+          const char *cdate = NULL;
+          const char *last_author = NULL;
 
           svn_pool_clear(subpool);
 
-          file_path = svn_path_join(full_path, name, subpool);
-
+          file_path = svn_fspath__join(full_path, name, subpool);
           if (! lookup_access(subpool, b, conn, svn_authz_read,
                               file_path, FALSE))
-            {
-              apr_hash_set(entries, name, APR_HASH_KEY_STRING, NULL);
-              continue;
-            }
-
-          entry = apr_pcalloc(pool, sizeof(*entry));
+            continue;
 
           if (dirent_fields & SVN_DIRENT_KIND)
-            {
-              /* kind */
-              entry->kind = fsent->kind;
-            }
+              entry_kind = fsent->kind;
 
           if (dirent_fields & SVN_DIRENT_SIZE)
-            {
-              /* size */
-              if (entry->kind == svn_node_dir)
-                entry->size = 0;
-              else
-                SVN_CMD_ERR(svn_fs_file_length(&entry->size, root, file_path,
+              if (entry_kind != svn_node_dir)
+                SVN_CMD_ERR(svn_fs_file_length(&entry_size, root, file_path,
                                                subpool));
-            }
 
           if (dirent_fields & SVN_DIRENT_HAS_PROPS)
             {
+              apr_hash_t *file_props;
+
               /* has_props */
               SVN_CMD_ERR(svn_fs_node_proplist(&file_props, root, file_path,
                                                subpool));
-              entry->has_props = (apr_hash_count(file_props) > 0);
+              has_props = (apr_hash_count(file_props) > 0);
             }
 
           if ((dirent_fields & SVN_DIRENT_LAST_AUTHOR)
@@ -1474,47 +1775,53 @@ static svn_error_t *get_dir(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
               || (dirent_fields & SVN_DIRENT_CREATED_REV))
             {
               /* created_rev, last_author, time */
-              SVN_CMD_ERR(svn_repos_get_committed_info(&entry->created_rev,
+              SVN_CMD_ERR(svn_repos_get_committed_info(&created_rev,
                                                        &cdate,
-                                                       &cauthor, root,
+                                                       &last_author,
+                                                       root,
                                                        file_path,
                                                        subpool));
-              entry->last_author = apr_pstrdup(pool, cauthor);
-              if (cdate)
-                SVN_CMD_ERR(svn_time_from_cstring(&entry->time, cdate,
-                                                  subpool));
-              else
-                entry->time = (time_t) -1;
             }
 
-          /* Store the entry. */
-          apr_hash_set(entries, name, APR_HASH_KEY_STRING, entry);
+          /* The client does not properly handle a missing CDATE. For
+             interoperability purposes, we must fill in some junk.
+
+             See libsvn_ra_svn/client.c:ra_svn_get_dir()  */
+          if (cdate == NULL)
+            cdate = missing_date;
+
+          /* Send the entry. */
+          SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "cwnbr(?c)(?c)", name,
+                                          svn_node_kind_to_word(entry_kind),
+                                          (apr_uint64_t) entry_size,
+                                          has_props, created_rev,
+                                          cdate, last_author));
         }
       svn_pool_destroy(subpool);
     }
 
-  /* Write out response. */
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w(r(!", "success", rev));
-  SVN_ERR(svn_ra_svn_write_proplist(conn, pool, props));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!)(!"));
-  if (want_contents)
+  if (wants_inherited_props)
     {
-      for (hi = apr_hash_first(pool, entries); hi; hi = apr_hash_next(hi))
+      apr_pool_t *iterpool = svn_pool_create(pool);
+
+      SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)(?!"));
+      for (i = 0; i < inherited_props->nelts; i++)
         {
-          apr_hash_this(hi, &key, NULL, &val);
-          name = key;
-          entry = val;
-          cdate = (entry->time == (time_t) -1) ? NULL
-            : svn_time_to_cstring(entry->time, pool);
-          SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "cwnbr(?c)(?c)", name,
-                                         svn_node_kind_to_word(entry->kind),
-                                         (apr_uint64_t) entry->size,
-                                         entry->has_props, entry->created_rev,
-                                         cdate, entry->last_author));
+          svn_prop_inherited_item_t *iprop =
+            APR_ARRAY_IDX(inherited_props, i, svn_prop_inherited_item_t *);
+
+          svn_pool_clear(iterpool);
+          SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!(c(!",
+                                          iprop->path_or_url));
+          SVN_ERR(svn_ra_svn__write_proplist(conn, iterpool, iprop->prop_hash));
+          SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!))!",
+                                          iprop->path_or_url));
         }
+      svn_pool_destroy(iterpool);
     }
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
-  return SVN_NO_ERROR;
+
+  /* Finish response. */
+  return svn_ra_svn__write_tuple(conn, pool, "!))");
 }
 
 static svn_error_t *update(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
@@ -1524,27 +1831,25 @@ static svn_error_t *update(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_revnum_t rev;
   const char *target, *full_path, *depth_word;
   svn_boolean_t recurse;
-  svn_boolean_t send_copyfrom_args;
-  apr_uint64_t send_copyfrom_param;
+  apr_uint64_t send_copyfrom_args; /* Optional; default FALSE */
+  apr_uint64_t ignore_ancestry; /* Optional; default FALSE */
   /* Default to unknown.  Old clients won't send depth, but we'll
      handle that by converting recurse if necessary. */
   svn_depth_t depth = svn_depth_unknown;
   svn_boolean_t is_checkout;
 
   /* Parse the arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "(?r)cb?wB", &rev, &target,
-                                 &recurse, &depth_word, &send_copyfrom_param));
-  target = svn_path_canonicalize(target, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "(?r)cb?wB?B", &rev, &target,
+                                  &recurse, &depth_word,
+                                  &send_copyfrom_args, &ignore_ancestry));
+  target = svn_relpath_canonicalize(target, pool);
 
   if (depth_word)
     depth = svn_depth_from_word(depth_word);
   else
     depth = SVN_DEPTH_INFINITY_OR_FILES(recurse);
 
-  send_copyfrom_args = (send_copyfrom_param == SVN_RA_SVN_UNSPECIFIED_NUMBER) ?
-      FALSE : (svn_boolean_t) send_copyfrom_param;
-
-  full_path = svn_path_join(b->fs_path->data, target, pool);
+  full_path = svn_fspath__join(b->fs_path->data, target, pool);
   /* Check authorization and authenticate the user if necessary. */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_read, full_path, FALSE));
 
@@ -1553,7 +1858,9 @@ static svn_error_t *update(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   SVN_ERR(accept_report(&is_checkout, NULL,
                         conn, pool, b, rev, target, NULL, TRUE,
-                        depth, send_copyfrom_args, FALSE));
+                        depth,
+                        (send_copyfrom_args == TRUE) /* send_copyfrom_args */,
+                        (ignore_ancestry == TRUE) /* ignore_ancestry */));
   if (is_checkout)
     {
       SVN_ERR(log_command(b, conn, pool, "%s",
@@ -1581,12 +1888,15 @@ static svn_error_t *switch_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   /* Default to unknown.  Old clients won't send depth, but we'll
      handle that by converting recurse if necessary. */
   svn_depth_t depth = svn_depth_unknown;
+  apr_uint64_t send_copyfrom_args; /* Optional; default FALSE */
+  apr_uint64_t ignore_ancestry; /* Optional; default TRUE */
 
   /* Parse the arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "(?r)cbc?w", &rev, &target,
-                                 &recurse, &switch_url, &depth_word));
-  target = svn_path_canonicalize(target, pool);
-  switch_url = svn_path_canonicalize(switch_url, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "(?r)cbc?w?BB", &rev, &target,
+                                  &recurse, &switch_url, &depth_word,
+                                  &send_copyfrom_args, &ignore_ancestry));
+  target = svn_relpath_canonicalize(target, pool);
+  switch_url = svn_uri_canonicalize(switch_url, pool);
 
   if (depth_word)
     depth = svn_depth_from_word(depth_word);
@@ -1602,7 +1912,7 @@ static svn_error_t *switch_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                           &switch_path));
 
   {
-    const char *full_path = svn_path_join(b->fs_path->data, target, pool);
+    const char *full_path = svn_fspath__join(b->fs_path->data, target, pool);
     SVN_ERR(log_command(b, conn, pool, "%s",
                         svn_log__switch(full_path, switch_path, rev,
                                         depth, pool)));
@@ -1611,8 +1921,8 @@ static svn_error_t *switch_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   return accept_report(NULL, NULL,
                        conn, pool, b, rev, target, switch_path, TRUE,
                        depth,
-                       FALSE /* TODO(sussman): no copyfrom args for now */,
-                       TRUE);
+                       (send_copyfrom_args == TRUE) /* send_copyfrom_args */,
+                       (ignore_ancestry != FALSE) /* ignore_ancestry */);
 }
 
 static svn_error_t *status(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
@@ -1627,9 +1937,9 @@ static svn_error_t *status(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_depth_t depth = svn_depth_unknown;
 
   /* Parse the arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "cb?(?r)?w",
-                                 &target, &recurse, &rev, &depth_word));
-  target = svn_path_canonicalize(target, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "cb?(?r)?w",
+                                  &target, &recurse, &rev, &depth_word));
+  target = svn_relpath_canonicalize(target, pool);
 
   if (depth_word)
     depth = svn_depth_from_word(depth_word);
@@ -1641,7 +1951,7 @@ static svn_error_t *status(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
     SVN_CMD_ERR(svn_fs_youngest_rev(&rev, b->fs, pool));
 
   {
-    const char *full_path = svn_path_join(b->fs_path->data, target, pool);
+    const char *full_path = svn_fspath__join(b->fs_path->data, target, pool);
     SVN_ERR(log_command(b, conn, pool, "%s",
                         svn_log__status(full_path, rev, depth, pool)));
   }
@@ -1666,20 +1976,20 @@ static svn_error_t *diff(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   if (params->nelts == 5)
     {
       /* Clients before 1.4 don't send the text_deltas boolean or depth. */
-      SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "(?r)cbbc", &rev, &target,
-                                     &recurse, &ignore_ancestry, &versus_url));
+      SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "(?r)cbbc", &rev, &target,
+                                      &recurse, &ignore_ancestry, &versus_url));
       text_deltas = TRUE;
       depth_word = NULL;
     }
   else
     {
-      SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "(?r)cbbcb?w",
-                                     &rev, &target, &recurse,
-                                     &ignore_ancestry, &versus_url,
-                                     &text_deltas, &depth_word));
+      SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "(?r)cbbcb?w",
+                                      &rev, &target, &recurse,
+                                      &ignore_ancestry, &versus_url,
+                                      &text_deltas, &depth_word));
     }
-  target = svn_path_canonicalize(target, pool);
-  versus_url = svn_path_canonicalize(versus_url, pool);
+  target = svn_relpath_canonicalize(target, pool);
+  versus_url = svn_uri_canonicalize(versus_url, pool);
 
   if (depth_word)
     depth = svn_depth_from_word(depth_word);
@@ -1695,7 +2005,7 @@ static svn_error_t *diff(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                           &versus_path));
 
   {
-    const char *full_path = svn_path_join(b->fs_path->data, target, pool);
+    const char *full_path = svn_fspath__join(b->fs_path->data, target, pool);
     svn_revnum_t from_rev;
     SVN_ERR(accept_report(NULL, &from_rev,
                           conn, pool, b, rev, target, versus_path,
@@ -1727,9 +2037,13 @@ static svn_error_t *get_mergeinfo(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_mergeinfo_inheritance_t inherit;
   svn_boolean_t include_descendants;
   apr_pool_t *iterpool;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "l(?r)wb", &paths, &rev,
-                                 &inherit_word, &include_descendants));
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "l(?r)wb", &paths, &rev,
+                                  &inherit_word, &include_descendants));
   inherit = svn_inheritance_from_word(inherit_word);
 
   /* Canonicalize the paths which mergeinfo has been requested for. */
@@ -1742,10 +2056,8 @@ static svn_error_t *get_mergeinfo(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         if (item->kind != SVN_RA_SVN_STRING)
           return svn_error_create(SVN_ERR_RA_SVN_MALFORMED_DATA, NULL,
                                   _("Path is not a string"));
-        full_path = svn_path_join(b->fs_path->data,
-                                  svn_path_canonicalize(item->u.string->data,
-                                                        pool),
-                                  pool);
+        full_path = svn_relpath_canonicalize(item->u.string->data, pool);
+        full_path = svn_fspath__join(b->fs_path->data, full_path, pool);
         APR_ARRAY_PUSH(canonical_paths, const char *) = full_path;
      }
 
@@ -1759,29 +2071,26 @@ static svn_error_t *get_mergeinfo(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                                          canonical_paths, rev,
                                          inherit,
                                          include_descendants,
-                                         authz_check_access_cb_func(b), b,
+                                         authz_check_access_cb_func(b), &ab,
                                          pool));
   SVN_ERR(svn_mergeinfo__remove_prefix_from_catalog(&mergeinfo, mergeinfo,
                                                     b->fs_path->data, pool));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w((!", "success"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w((!", "success"));
   iterpool = svn_pool_create(pool);
   for (hi = apr_hash_first(pool, mergeinfo); hi; hi = apr_hash_next(hi))
     {
-      const void *key;
-      void *value;
+      const char *key = svn__apr_hash_index_key(hi);
+      svn_mergeinfo_t value = svn__apr_hash_index_val(hi);
       svn_string_t *mergeinfo_string;
 
       svn_pool_clear(iterpool);
 
-      apr_hash_this(hi, &key, NULL, &value);
-      SVN_ERR(svn_mergeinfo_to_string(&mergeinfo_string,
-                                      (svn_mergeinfo_t) value,
-                                      iterpool));
-      SVN_ERR(svn_ra_svn_write_tuple(conn, iterpool, "cs", (const char *) key,
-                                     mergeinfo_string));
+      SVN_ERR(svn_mergeinfo_to_string(&mergeinfo_string, value, iterpool));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "cs", key,
+                                      mergeinfo_string));
     }
   svn_pool_destroy(iterpool);
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!))"));
 
   return SVN_NO_ERROR;
 }
@@ -1794,10 +2103,6 @@ static svn_error_t *log_receiver(void *baton,
   log_baton_t *b = baton;
   svn_ra_svn_conn_t *conn = b->conn;
   apr_hash_index_t *h;
-  const void *key;
-  void *val;
-  const char *path;
-  svn_log_changed_path2_t *change;
   svn_boolean_t invalid_revnum = FALSE;
   char action[2];
   const char *author, *date, *message;
@@ -1817,22 +2122,27 @@ static svn_error_t *log_receiver(void *baton,
       b->stack_depth--;
     }
 
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "(!"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "(!"));
   if (log_entry->changed_paths2)
     {
       for (h = apr_hash_first(pool, log_entry->changed_paths2); h;
                                                         h = apr_hash_next(h))
         {
-          apr_hash_this(h, &key, NULL, &val);
-          path = key;
-          change = val;
+          const char *path = svn__apr_hash_index_key(h);
+          svn_log_changed_path2_t *change = svn__apr_hash_index_val(h);
+
           action[0] = change->action;
           action[1] = '\0';
-          SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "cw(?cr)(?c)", path,
-                                         action, change->copyfrom_path,
-                                         change->copyfrom_rev,
-                                         svn_node_kind_to_word(
-                                                          change->node_kind)));
+          SVN_ERR(svn_ra_svn__write_tuple(
+                      conn, pool, "cw(?cr)(cbb)",
+                      path,
+                      action,
+                      change->copyfrom_path,
+                      change->copyfrom_rev,
+                      svn_node_kind_to_word(change->node_kind),
+                      /* text_modified and props_modified are never unknown */
+                      change->text_modified  == svn_tristate_true,
+                      change->props_modified == svn_tristate_true));
         }
     }
   svn_compat_log_revprops_out(&author, &date, &message, log_entry->revprops);
@@ -1841,13 +2151,14 @@ static svn_error_t *log_receiver(void *baton,
     revprop_count = apr_hash_count(log_entry->revprops);
   else
     revprop_count = 0;
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!)r(?c)(?c)(?c)bbn(!",
-                                 log_entry->revision,
-                                 author, date, message,
-                                 log_entry->has_children,
-                                 invalid_revnum, revprop_count));
-  SVN_ERR(svn_ra_svn_write_proplist(conn, pool, log_entry->revprops));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!)"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)r(?c)(?c)(?c)bbn(!",
+                                  log_entry->revision,
+                                  author, date, message,
+                                  log_entry->has_children,
+                                  invalid_revnum, revprop_count));
+  SVN_ERR(svn_ra_svn__write_proplist(conn, pool, log_entry->revprops));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)b",
+                                  log_entry->subtractive_merge));
 
   if (log_entry->has_children)
     b->stack_depth++;
@@ -1862,19 +2173,23 @@ static svn_error_t *log_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   server_baton_t *b = baton;
   svn_revnum_t start_rev, end_rev;
   const char *full_path;
-  svn_boolean_t changed_paths, strict_node, include_merged_revisions;
+  svn_boolean_t send_changed_paths, strict_node, include_merged_revisions;
   apr_array_header_t *paths, *full_paths, *revprop_items, *revprops;
   char *revprop_word;
   svn_ra_svn_item_t *elt;
   int i;
   apr_uint64_t limit, include_merged_revs_param;
   log_baton_t lb;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "l(?r)(?r)bb?n?Bwl", &paths,
-                                 &start_rev, &end_rev, &changed_paths,
-                                 &strict_node, &limit,
-                                 &include_merged_revs_param,
-                                 &revprop_word, &revprop_items));
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "l(?r)(?r)bb?n?Bwl", &paths,
+                                  &start_rev, &end_rev, &send_changed_paths,
+                                  &strict_node, &limit,
+                                  &include_merged_revs_param,
+                                  &revprop_word, &revprop_items));
 
   if (include_merged_revs_param == SVN_RA_SVN_UNSPECIFIED_NUMBER)
     include_merged_revisions = FALSE;
@@ -1888,18 +2203,17 @@ static svn_error_t *log_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
     revprops = NULL;
   else if (strcmp(revprop_word, "revprops") == 0)
     {
+      SVN_ERR_ASSERT(revprop_items);
+
       revprops = apr_array_make(pool, revprop_items->nelts,
                                 sizeof(char *));
-      if (revprop_items)
+      for (i = 0; i < revprop_items->nelts; i++)
         {
-          for (i = 0; i < revprop_items->nelts; i++)
-            {
-              elt = &APR_ARRAY_IDX(revprop_items, i, svn_ra_svn_item_t);
-              if (elt->kind != SVN_RA_SVN_STRING)
-                return svn_error_create(SVN_ERR_RA_SVN_MALFORMED_DATA, NULL,
-                                        _("Log revprop entry not a string"));
-              APR_ARRAY_PUSH(revprops, const char *) = elt->u.string->data;
-            }
+          elt = &APR_ARRAY_IDX(revprop_items, i, svn_ra_svn_item_t);
+          if (elt->kind != SVN_RA_SVN_STRING)
+            return svn_error_create(SVN_ERR_RA_SVN_MALFORMED_DATA, NULL,
+                                    _("Log revprop entry not a string"));
+          APR_ARRAY_PUSH(revprops, const char *) = elt->u.string->data;
         }
     }
   else
@@ -1921,38 +2235,36 @@ static svn_error_t *log_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
       if (elt->kind != SVN_RA_SVN_STRING)
         return svn_error_create(SVN_ERR_RA_SVN_MALFORMED_DATA, NULL,
                                 _("Log path entry not a string"));
-      full_path = svn_path_join(b->fs_path->data,
-                                svn_path_canonicalize(elt->u.string->data,
-                                                      pool),
-                                pool);
+      full_path = svn_relpath_canonicalize(elt->u.string->data, pool),
+      full_path = svn_fspath__join(b->fs_path->data, full_path, pool);
       APR_ARRAY_PUSH(full_paths, const char *) = full_path;
     }
   SVN_ERR(trivial_auth_request(conn, pool, b));
 
   SVN_ERR(log_command(b, conn, pool, "%s",
                       svn_log__log(full_paths, start_rev, end_rev,
-                                   limit, changed_paths, strict_node,
-                                   include_merged_revisions, revprops,
-                                   pool)));
+                                   (int) limit, send_changed_paths,
+                                   strict_node, include_merged_revisions,
+                                   revprops, pool)));
 
   /* Get logs.  (Can't report errors back to the client at this point.) */
   lb.fs_path = b->fs_path->data;
   lb.conn = conn;
   lb.stack_depth = 0;
   err = svn_repos_get_logs4(b->repos, full_paths, start_rev, end_rev,
-                            (int) limit, changed_paths, strict_node,
+                            (int) limit, send_changed_paths, strict_node,
                             include_merged_revisions, revprops,
-                            authz_check_access_cb_func(b), b, log_receiver,
+                            authz_check_access_cb_func(b), &ab, log_receiver,
                             &lb, pool);
 
-  write_err = svn_ra_svn_write_word(conn, pool, "done");
+  write_err = svn_ra_svn__write_word(conn, pool, "done");
   if (write_err)
     {
       svn_error_clear(err);
       return write_err;
     }
   SVN_CMD_ERR(err);
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
   return SVN_NO_ERROR;
 }
 
@@ -1965,9 +2277,9 @@ static svn_error_t *check_path(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_fs_root_t *root;
   svn_node_kind_t kind;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?r)", &path, &rev));
-  full_path = svn_path_join(b->fs_path->data,
-                            svn_path_canonicalize(path, pool), pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?r)", &path, &rev));
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   /* Check authorizations */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_read,
@@ -1981,8 +2293,8 @@ static svn_error_t *check_path(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   SVN_CMD_ERR(svn_fs_revision_root(&root, b->fs, rev, pool));
   SVN_CMD_ERR(svn_fs_check_path(&kind, root, full_path, pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "w",
-                                        svn_node_kind_to_word(kind)));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "w",
+                                         svn_node_kind_to_word(kind)));
   return SVN_NO_ERROR;
 }
 
@@ -1995,9 +2307,9 @@ static svn_error_t *stat_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_fs_root_t *root;
   svn_dirent_t *dirent;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?r)", &path, &rev));
-  full_path = svn_path_join(b->fs_path->data,
-                            svn_path_canonicalize(path, pool), pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?r)", &path, &rev));
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   /* Check authorizations */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_read,
@@ -2017,18 +2329,18 @@ static svn_error_t *stat_cmd(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   if (dirent == NULL)
     {
-      SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "()"));
+      SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "()"));
       return SVN_NO_ERROR;
     }
 
   cdate = (dirent->time == (time_t) -1) ? NULL
     : svn_time_to_cstring(dirent->time, pool);
 
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "((wnbr(?c)(?c)))",
-                                        svn_node_kind_to_word(dirent->kind),
-                                        (apr_uint64_t) dirent->size,
-                                        dirent->has_props, dirent->created_rev,
-                                        cdate, dirent->last_author));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "((wnbr(?c)(?c)))",
+                                         svn_node_kind_to_word(dirent->kind),
+                                         (apr_uint64_t) dirent->size,
+                                         dirent->has_props, dirent->created_rev,
+                                         cdate, dirent->last_author));
 
   return SVN_NO_ERROR;
 }
@@ -2045,18 +2357,19 @@ static svn_error_t *get_locations(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   const char *relative_path;
   svn_revnum_t peg_revision;
   apr_hash_t *fs_locations;
-  apr_hash_index_t *iter;
   const char *abs_path;
-  const void *iter_key;
-  void *iter_value;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   /* Parse the arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "crl", &relative_path,
-                                 &peg_revision,
-                                 &loc_revs_proto));
-  relative_path = svn_path_canonicalize(relative_path, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "crl", &relative_path,
+                                  &peg_revision,
+                                  &loc_revs_proto));
+  relative_path = svn_relpath_canonicalize(relative_path, pool);
 
-  abs_path = svn_path_join(b->fs_path->data, relative_path, pool);
+  abs_path = svn_fspath__join(b->fs_path->data, relative_path, pool);
 
   location_revisions = apr_array_make(pool, loc_revs_proto->nelts,
                                       sizeof(svn_revnum_t));
@@ -2083,25 +2396,29 @@ static svn_error_t *get_locations(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   err = svn_repos_trace_node_locations(b->fs, &fs_locations, abs_path,
                                        peg_revision, location_revisions,
-                                       authz_check_access_cb_func(b), b, pool);
+                                       authz_check_access_cb_func(b), &ab,
+                                       pool);
 
   /* Now, write the results to the connection. */
   if (!err)
     {
       if (fs_locations)
         {
+          apr_hash_index_t *iter;
+
           for (iter = apr_hash_first(pool, fs_locations); iter;
               iter = apr_hash_next(iter))
             {
-              apr_hash_this(iter, &iter_key, NULL, &iter_value);
-              SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "rc",
-                                             *(const svn_revnum_t *)iter_key,
-                                             (const char *)iter_value));
+              const svn_revnum_t *iter_key = svn__apr_hash_index_key(iter);
+              const char *iter_value = svn__apr_hash_index_val(iter);
+
+              SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "rc",
+                                              *iter_key, iter_value));
             }
         }
     }
 
-  write_err = svn_ra_svn_write_word(conn, pool, "done");
+  write_err = svn_ra_svn__write_word(conn, pool, "done");
   if (write_err)
     {
       svn_error_clear(err);
@@ -2109,7 +2426,7 @@ static svn_error_t *get_locations(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
     }
   SVN_CMD_ERR(err);
 
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2119,10 +2436,10 @@ static svn_error_t *gls_receiver(svn_location_segment_t *segment,
                                  apr_pool_t *pool)
 {
   svn_ra_svn_conn_t *conn = baton;
-  return svn_ra_svn_write_tuple(conn, pool, "rr(?c)",
-                                segment->range_start,
-                                segment->range_end,
-                                segment->path);
+  return svn_ra_svn__write_tuple(conn, pool, "rr(?c)",
+                                 segment->range_start,
+                                 segment->range_end,
+                                 segment->path);
 }
 
 static svn_error_t *get_location_segments(svn_ra_svn_conn_t *conn,
@@ -2135,28 +2452,38 @@ static svn_error_t *get_location_segments(svn_ra_svn_conn_t *conn,
   svn_revnum_t peg_revision, start_rev, end_rev;
   const char *relative_path;
   const char *abs_path;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   /* Parse the arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?r)(?r)(?r)",
-                                 &relative_path, &peg_revision,
-                                 &start_rev, &end_rev));
-  relative_path = svn_path_canonicalize(relative_path, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?r)(?r)(?r)",
+                                  &relative_path, &peg_revision,
+                                  &start_rev, &end_rev));
+  relative_path = svn_relpath_canonicalize(relative_path, pool);
 
-  abs_path = svn_path_join(b->fs_path->data, relative_path, pool);
+  abs_path = svn_fspath__join(b->fs_path->data, relative_path, pool);
 
   if (SVN_IS_VALID_REVNUM(start_rev)
       && SVN_IS_VALID_REVNUM(end_rev)
       && (end_rev > start_rev))
-    return svn_error_createf(SVN_ERR_INCORRECT_PARAMS, NULL,
-                             "Get-location-segments end revision must not be "
-                             "younger than start revision");
+    {
+      err = svn_error_createf(SVN_ERR_INCORRECT_PARAMS, NULL,
+                              "Get-location-segments end revision must not be "
+                              "younger than start revision");
+      return log_fail_and_flush(err, b, conn, pool);
+    }
 
   if (SVN_IS_VALID_REVNUM(peg_revision)
       && SVN_IS_VALID_REVNUM(start_rev)
       && (start_rev > peg_revision))
-    return svn_error_createf(SVN_ERR_INCORRECT_PARAMS, NULL,
-                             "Get-location-segments start revision must not "
-                             "be younger than peg revision");
+    {
+      err = svn_error_createf(SVN_ERR_INCORRECT_PARAMS, NULL,
+                              "Get-location-segments start revision must not "
+                              "be younger than peg revision");
+      return log_fail_and_flush(err, b, conn, pool);
+    }
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_ERR(log_command(baton, conn, pool, "%s",
@@ -2173,9 +2500,9 @@ static svn_error_t *get_location_segments(svn_ra_svn_conn_t *conn,
   err = svn_repos_node_location_segments(b->repos, abs_path,
                                          peg_revision, start_rev, end_rev,
                                          gls_receiver, (void *)conn,
-                                         authz_check_access_cb_func(b), b,
+                                         authz_check_access_cb_func(b), &ab,
                                          pool);
-  write_err = svn_ra_svn_write_word(conn, pool, "done");
+  write_err = svn_ra_svn__write_word(conn, pool, "done");
   if (write_err)
     {
       svn_error_clear(err);
@@ -2183,7 +2510,7 @@ static svn_error_t *get_location_segments(svn_ra_svn_conn_t *conn,
     }
   SVN_CMD_ERR(err);
 
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2198,7 +2525,7 @@ static svn_error_t *svndiff_handler(void *baton, const char *data,
 
   str.data = data;
   str.len = *len;
-  return svn_ra_svn_write_string(b->conn, b->pool, &str);
+  return svn_ra_svn__write_string(b->conn, b->pool, &str);
 }
 
 /* This implements svn_close_fn_t.  Mark the end of the data by writing an
@@ -2207,7 +2534,7 @@ static svn_error_t *svndiff_close_handler(void *baton)
 {
   file_revs_baton_t *b = baton;
 
-  SVN_ERR(svn_ra_svn_write_cstring(b->conn, b->pool, ""));
+  SVN_ERR(svn_ra_svn__write_cstring(b->conn, b->pool, ""));
   return SVN_NO_ERROR;
 }
 
@@ -2223,12 +2550,12 @@ static svn_error_t *file_rev_handler(void *baton, const char *path,
   file_revs_baton_t *frb = baton;
   svn_stream_t *stream;
 
-  SVN_ERR(svn_ra_svn_write_tuple(frb->conn, pool, "cr(!",
-                                 path, rev));
-  SVN_ERR(svn_ra_svn_write_proplist(frb->conn, pool, rev_props));
-  SVN_ERR(svn_ra_svn_write_tuple(frb->conn, pool, "!)(!"));
+  SVN_ERR(svn_ra_svn__write_tuple(frb->conn, pool, "cr(!",
+                                  path, rev));
+  SVN_ERR(svn_ra_svn__write_proplist(frb->conn, pool, rev_props));
+  SVN_ERR(svn_ra_svn__write_tuple(frb->conn, pool, "!)(!"));
   SVN_ERR(write_prop_diffs(frb->conn, pool, prop_diffs));
-  SVN_ERR(svn_ra_svn_write_tuple(frb->conn, pool, "!)b", merged_revision));
+  SVN_ERR(svn_ra_svn__write_tuple(frb->conn, pool, "!)b", merged_revision));
 
   /* Store the pool for the delta stream. */
   frb->pool = pool;
@@ -2240,13 +2567,18 @@ static svn_error_t *file_rev_handler(void *baton, const char *path,
       svn_stream_set_write(stream, svndiff_handler);
       svn_stream_set_close(stream, svndiff_close_handler);
 
-      if (svn_ra_svn_has_capability(frb->conn, SVN_RA_SVN_CAP_SVNDIFF1))
-        svn_txdelta_to_svndiff2(d_handler, d_baton, stream, 1, pool);
+      /* If the connection does not support SVNDIFF1 or if we don't want to use
+       * compression, use the non-compressing "version 0" implementation */
+      if (   svn_ra_svn_compression_level(frb->conn) > 0
+          && svn_ra_svn_has_capability(frb->conn, SVN_RA_SVN_CAP_SVNDIFF1))
+        svn_txdelta_to_svndiff3(d_handler, d_baton, stream, 1,
+                                svn_ra_svn_compression_level(frb->conn), pool);
       else
-        svn_txdelta_to_svndiff2(d_handler, d_baton, stream, 0, pool);
+        svn_txdelta_to_svndiff3(d_handler, d_baton, stream, 0,
+                                svn_ra_svn_compression_level(frb->conn), pool);
     }
   else
-    SVN_ERR(svn_ra_svn_write_cstring(frb->conn, pool, ""));
+    SVN_ERR(svn_ra_svn__write_cstring(frb->conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2262,14 +2594,18 @@ static svn_error_t *get_file_revs(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   const char *full_path;
   apr_uint64_t include_merged_revs_param;
   svn_boolean_t include_merged_revisions;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   /* Parse arguments. */
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?r)(?r)?B",
-                                 &path, &start_rev, &end_rev,
-                                 &include_merged_revs_param));
-  path = svn_path_canonicalize(path, pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?r)(?r)?B",
+                                  &path, &start_rev, &end_rev,
+                                  &include_merged_revs_param));
+  path = svn_relpath_canonicalize(path, pool);
   SVN_ERR(trivial_auth_request(conn, pool, b));
-  full_path = svn_path_join(b->fs_path->data, path, pool);
+  full_path = svn_fspath__join(b->fs_path->data, path, pool);
 
   if (include_merged_revs_param == SVN_RA_SVN_UNSPECIFIED_NUMBER)
     include_merged_revisions = FALSE;
@@ -2286,16 +2622,16 @@ static svn_error_t *get_file_revs(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   err = svn_repos_get_file_revs2(b->repos, full_path, start_rev, end_rev,
                                  include_merged_revisions,
-                                 authz_check_access_cb_func(b), b,
+                                 authz_check_access_cb_func(b), &ab,
                                  file_rev_handler, &frb, pool);
-  write_err = svn_ra_svn_write_word(conn, pool, "done");
+  write_err = svn_ra_svn__write_word(conn, pool, "done");
   if (write_err)
     {
       svn_error_clear(err);
       return write_err;
     }
   SVN_CMD_ERR(err);
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2311,10 +2647,10 @@ static svn_error_t *lock(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_revnum_t current_rev;
   svn_lock_t *l;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?c)b(?r)", &path, &comment,
-                                 &steal_lock, &current_rev));
-  full_path = svn_path_join(b->fs_path->data,
-                            svn_path_canonicalize(path, pool), pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?c)b(?r)", &path, &comment,
+                                  &steal_lock, &current_rev));
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_write,
                            full_path, TRUE));
@@ -2325,9 +2661,9 @@ static svn_error_t *lock(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                                 0, /* No expiration time. */
                                 current_rev, steal_lock, pool));
 
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w(!", "success"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w(!", "success"));
   SVN_ERR(write_lock(conn, pool, l));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!)"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!)"));
 
   return SVN_NO_ERROR;
 }
@@ -2348,8 +2684,8 @@ static svn_error_t *lock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_lock_t *l;
   svn_error_t *err = SVN_NO_ERROR, *write_err;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "(?c)bl", &comment, &steal_lock,
-                                 &path_revs));
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "(?c)bl", &comment, &steal_lock,
+                                  &path_revs));
 
   subpool = svn_pool_create(pool);
 
@@ -2372,14 +2708,14 @@ static svn_error_t *lock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         return svn_error_create(SVN_ERR_RA_SVN_MALFORMED_DATA, NULL,
                                 "Lock requests should be list of lists");
 
-      SVN_ERR(svn_ra_svn_parse_tuple(item->u.list, pool, "c(?r)", &path,
-                                     &current_rev));
+      SVN_ERR(svn_ra_svn__parse_tuple(item->u.list, pool, "c(?r)", &path,
+                                      &current_rev));
 
       /* Allocate the full_path out of pool so it will survive for use
        * by operational logging, after this loop. */
-      full_path = svn_path_join(b->fs_path->data,
-                                svn_path_canonicalize(path, subpool),
-                                pool);
+      full_path = svn_fspath__join(b->fs_path->data,
+                                   svn_relpath_canonicalize(path, subpool),
+                                   pool);
       APR_ARRAY_PUSH(log_paths, const char *) = full_path;
 
       if (! lookup_access(pool, b, conn, svn_authz_write, full_path, TRUE))
@@ -2399,7 +2735,7 @@ static svn_error_t *lock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         {
           if (SVN_ERR_IS_LOCK_ERROR(err))
             {
-              write_err = svn_ra_svn_write_cmd_failure(conn, pool, err);
+              write_err = svn_ra_svn__write_cmd_failure(conn, pool, err);
               svn_error_clear(err);
               err = NULL;
               SVN_ERR(write_err);
@@ -2409,9 +2745,9 @@ static svn_error_t *lock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         }
       else
         {
-          SVN_ERR(svn_ra_svn_write_tuple(conn, subpool, "w!", "success"));
+          SVN_ERR(svn_ra_svn__write_tuple(conn, subpool, "w!", "success"));
           SVN_ERR(write_lock(conn, subpool, l));
-          SVN_ERR(svn_ra_svn_write_tuple(conn, subpool, "!"));
+          SVN_ERR(svn_ra_svn__write_tuple(conn, subpool, "!"));
         }
     }
 
@@ -2421,12 +2757,12 @@ static svn_error_t *lock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                       svn_log__lock(log_paths, steal_lock, pool)));
 
   /* NOTE: err might contain a fatal locking error from the loop above. */
-  write_err = svn_ra_svn_write_word(conn, pool, "done");
+  write_err = svn_ra_svn__write_word(conn, pool, "done");
   if (!write_err)
     SVN_CMD_ERR(err);
   svn_error_clear(err);
   SVN_ERR(write_err);
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2438,11 +2774,11 @@ static svn_error_t *unlock(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   const char *path, *token, *full_path;
   svn_boolean_t break_lock;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c(?c)b", &path, &token,
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c(?c)b", &path, &token,
                                  &break_lock));
 
-  full_path = svn_path_join(b->fs_path->data, svn_path_canonicalize(path, pool),
-                            pool);
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   /* Username required unless break_lock was specified. */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_write,
@@ -2453,7 +2789,7 @@ static svn_error_t *unlock(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   SVN_CMD_ERR(svn_repos_fs_unlock(b->repos, full_path, token, break_lock,
                                   pool));
 
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2472,8 +2808,8 @@ static svn_error_t *unlock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   const char *token;
   svn_error_t *err = SVN_NO_ERROR, *write_err;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "bl", &break_lock,
-                                 &unlock_tokens));
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "bl", &break_lock,
+                                  &unlock_tokens));
 
   /* Username required unless break_lock was specified. */
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_write, NULL, ! break_lock));
@@ -2493,14 +2829,14 @@ static svn_error_t *unlock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         return svn_error_create(SVN_ERR_RA_SVN_MALFORMED_DATA, NULL,
                                 "Unlock request should be a list of lists");
 
-      SVN_ERR(svn_ra_svn_parse_tuple(item->u.list, subpool, "c(?c)", &path,
-                                     &token));
+      SVN_ERR(svn_ra_svn__parse_tuple(item->u.list, subpool, "c(?c)", &path,
+                                      &token));
 
       /* Allocate the full_path out of pool so it will survive for use
        * by operational logging, after this loop. */
-      full_path = svn_path_join(b->fs_path->data,
-                                svn_path_canonicalize(path, subpool),
-                                pool);
+      full_path = svn_fspath__join(b->fs_path->data,
+                                   svn_relpath_canonicalize(path, subpool),
+                                   pool);
       APR_ARRAY_PUSH(log_paths, const char *) = full_path;
 
       if (! lookup_access(subpool, b, conn, svn_authz_write, full_path,
@@ -2517,7 +2853,7 @@ static svn_error_t *unlock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
         {
           if (SVN_ERR_IS_UNLOCK_ERROR(err))
             {
-              write_err = svn_ra_svn_write_cmd_failure(conn, pool, err);
+              write_err = svn_ra_svn__write_cmd_failure(conn, pool, err);
               svn_error_clear(err);
               err = NULL;
               SVN_ERR(write_err);
@@ -2526,8 +2862,8 @@ static svn_error_t *unlock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
             break;
         }
       else
-        SVN_ERR(svn_ra_svn_write_tuple(conn, subpool, "w(c)", "success",
-                                       path));
+        SVN_ERR(svn_ra_svn__write_tuple(conn, subpool, "w(c)", "success",
+                                        path));
     }
 
   svn_pool_destroy(subpool);
@@ -2536,11 +2872,11 @@ static svn_error_t *unlock_many(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
                       svn_log__unlock(log_paths, break_lock, pool)));
 
   /* NOTE: err might contain a fatal unlocking error from the loop above. */
-  write_err = svn_ra_svn_write_word(conn, pool, "done");
+  write_err = svn_ra_svn__write_word(conn, pool, "done");
   if (! write_err)
     SVN_CMD_ERR(err);
   svn_error_clear(err);
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2553,11 +2889,10 @@ static svn_error_t *get_lock(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   const char *full_path;
   svn_lock_t *l;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c", &path));
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c", &path));
 
-  full_path = svn_path_join(b->fs_path->data, svn_path_canonicalize(path,
-                                                                    pool),
-                            pool);
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   SVN_ERR(must_have_access(conn, pool, b, svn_authz_read,
                            full_path, FALSE));
@@ -2566,10 +2901,10 @@ static svn_error_t *get_lock(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
   SVN_CMD_ERR(svn_fs_get_lock(&l, b->fs, full_path, pool));
 
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w((!", "success"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w((!", "success"));
   if (l)
     SVN_ERR(write_lock(conn, pool, l));
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!))"));
 
   return SVN_NO_ERROR;
 }
@@ -2580,32 +2915,48 @@ static svn_error_t *get_locks(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   server_baton_t *b = baton;
   const char *path;
   const char *full_path;
+  const char *depth_word;
+  svn_depth_t depth;
   apr_hash_t *locks;
   apr_hash_index_t *hi;
-  void *val;
-  svn_lock_t *l;
+  svn_error_t *err;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "c", &path));
+  ab.server = b;
+  ab.conn = conn;
 
-  full_path = svn_path_join(b->fs_path->data, svn_path_canonicalize(path,
-                                                                    pool),
-                            pool);
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "c?(?w)", &path, &depth_word));
+
+  depth = depth_word ? svn_depth_from_word(depth_word) : svn_depth_infinity;
+  if ((depth != svn_depth_empty) &&
+      (depth != svn_depth_files) &&
+      (depth != svn_depth_immediates) &&
+      (depth != svn_depth_infinity))
+    {
+      err = svn_error_create(SVN_ERR_INCORRECT_PARAMS, NULL,
+                             "Invalid 'depth' specified in get-locks request");
+      return log_fail_and_flush(err, b, conn, pool);
+    }
+
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
 
   SVN_ERR(log_command(b, conn, pool, "get-locks %s",
                       svn_path_uri_encode(full_path, pool)));
-  SVN_CMD_ERR(svn_repos_fs_get_locks(&locks, b->repos, full_path,
-                                     authz_check_access_cb_func(b), b, pool));
+  SVN_CMD_ERR(svn_repos_fs_get_locks2(&locks, b->repos, full_path, depth,
+                                      authz_check_access_cb_func(b), &ab,
+                                      pool));
 
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w((!", "success"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w((!", "success"));
   for (hi = apr_hash_first(pool, locks); hi; hi = apr_hash_next(hi))
     {
-      apr_hash_this(hi, NULL, NULL, &val);
-      l = val;
+      svn_lock_t *l = svn__apr_hash_index_val(hi);
+
       SVN_ERR(write_lock(conn, pool, l));
     }
-  SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
+  SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!))"));
 
   return SVN_NO_ERROR;
 }
@@ -2621,10 +2972,13 @@ static svn_error_t *replay_one_revision(svn_ra_svn_conn_t *conn,
   void *edit_baton;
   svn_fs_root_t *root;
   svn_error_t *err;
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
 
   SVN_ERR(log_command(b, conn, pool,
-                      svn_log__replay(b->fs_path->data, low_water_mark,
-                                      pool)));
+                      svn_log__replay(b->fs_path->data, rev, pool)));
 
   svn_ra_svn_get_editor(&editor, &edit_baton, conn, pool, NULL, NULL);
 
@@ -2633,13 +2987,13 @@ static svn_error_t *replay_one_revision(svn_ra_svn_conn_t *conn,
   if (! err)
     err = svn_repos_replay2(root, b->fs_path->data, low_water_mark,
                             send_deltas, editor, edit_baton,
-                            authz_check_access_cb_func(b), b, pool);
+                            authz_check_access_cb_func(b), &ab, pool);
 
   if (err)
     svn_error_clear(editor->abort_edit(edit_baton, pool));
   SVN_CMD_ERR(err);
 
-  return svn_ra_svn_write_cmd(conn, pool, "finish-replay", "");
+  return svn_ra_svn__write_cmd_finish_replay(conn, pool);
 }
 
 static svn_error_t *replay(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
@@ -2649,7 +3003,7 @@ static svn_error_t *replay(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_boolean_t send_deltas;
   server_baton_t *b = baton;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "rrb", &rev, &low_water_mark,
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "rrb", &rev, &low_water_mark,
                                  &send_deltas));
 
   SVN_ERR(trivial_auth_request(conn, pool, b));
@@ -2657,7 +3011,7 @@ static svn_error_t *replay(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   SVN_ERR(replay_one_revision(conn, b, rev, low_water_mark,
                               send_deltas, pool));
 
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2669,8 +3023,12 @@ static svn_error_t *replay_range(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
   svn_boolean_t send_deltas;
   server_baton_t *b = baton;
   apr_pool_t *iterpool;
+  authz_baton_t ab;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "rrrb", &start_rev,
+  ab.server = b;
+  ab.conn = conn;
+
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "rrrb", &start_rev,
                                  &end_rev, &low_water_mark,
                                  &send_deltas));
 
@@ -2685,11 +3043,11 @@ static svn_error_t *replay_range(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
 
       SVN_CMD_ERR(svn_repos_fs_revision_proplist(&props, b->repos, rev,
                                                  authz_check_access_cb_func(b),
-                                                 b,
+                                                 &ab,
                                                  iterpool));
-      SVN_ERR(svn_ra_svn_write_tuple(conn, iterpool, "w(!", "revprops"));
-      SVN_ERR(svn_ra_svn_write_proplist(conn, iterpool, props));
-      SVN_ERR(svn_ra_svn_write_tuple(conn, iterpool, "!)"));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "w(!", "revprops"));
+      SVN_ERR(svn_ra_svn__write_proplist(conn, iterpool, props));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!)"));
 
       SVN_ERR(replay_one_revision(conn, b, rev, low_water_mark,
                                   send_deltas, iterpool));
@@ -2697,7 +3055,7 @@ static svn_error_t *replay_range(svn_ra_svn_conn_t *conn, apr_pool_t *pool,
     }
   svn_pool_destroy(iterpool);
 
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, ""));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, ""));
 
   return SVN_NO_ERROR;
 }
@@ -2714,15 +3072,78 @@ get_deleted_rev(svn_ra_svn_conn_t *conn,
   svn_revnum_t end_revision;
   svn_revnum_t revision_deleted;
 
-  SVN_ERR(svn_ra_svn_parse_tuple(params, pool, "crr",
+  SVN_ERR(svn_ra_svn__parse_tuple(params, pool, "crr",
                                  &path, &peg_revision, &end_revision));
-  full_path = svn_path_join(b->fs_path->data,
-                            svn_path_canonicalize(path, pool), pool);
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, pool), pool);
   SVN_ERR(log_command(b, conn, pool, "get-deleted-rev"));
   SVN_ERR(trivial_auth_request(conn, pool, b));
   SVN_ERR(svn_repos_deleted_rev(b->fs, full_path, peg_revision, end_revision,
                                 &revision_deleted, pool));
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "r", revision_deleted));
+  SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "r", revision_deleted));
+  return SVN_NO_ERROR;
+}
+
+static svn_error_t *
+get_inherited_props(svn_ra_svn_conn_t *conn,
+                    apr_pool_t *pool,
+                    apr_array_header_t *params,
+                    void *baton)
+{
+  server_baton_t *b = baton;
+  const char *path, *full_path;
+  svn_revnum_t rev;
+  svn_fs_root_t *root;
+  apr_array_header_t *inherited_props;
+  int i;
+  apr_pool_t *iterpool = svn_pool_create(pool);
+  authz_baton_t ab;
+
+  ab.server = b;
+  ab.conn = conn;
+
+  /* Parse arguments. */
+  SVN_ERR(svn_ra_svn__parse_tuple(params, iterpool, "c(?r)", &path, &rev));
+
+  full_path = svn_fspath__join(b->fs_path->data,
+                               svn_relpath_canonicalize(path, iterpool),
+                               pool);
+
+  /* Check authorizations */
+  SVN_ERR(must_have_access(conn, iterpool, b, svn_authz_read,
+                           full_path, FALSE));
+
+  if (!SVN_IS_VALID_REVNUM(rev))
+    SVN_CMD_ERR(svn_fs_youngest_rev(&rev, b->fs, pool));
+
+  SVN_ERR(log_command(b, conn, pool, "%s",
+                      svn_log__get_inherited_props(full_path, rev,
+                                                   iterpool)));
+
+  /* Fetch the properties and a stream for the contents. */
+  SVN_CMD_ERR(svn_fs_revision_root(&root, b->fs, rev, iterpool));
+  SVN_CMD_ERR(get_props(NULL, &inherited_props, &ab, root, full_path, pool));
+
+  /* Send successful command response with revision and props. */
+  SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "w(!", "success"));
+
+  SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!(?!"));
+
+  for (i = 0; i < inherited_props->nelts; i++)
+    {
+      svn_prop_inherited_item_t *iprop =
+        APR_ARRAY_IDX(inherited_props, i, svn_prop_inherited_item_t *);
+
+      svn_pool_clear(iterpool);
+      SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!(c(!",
+                                      iprop->path_or_url));
+      SVN_ERR(svn_ra_svn__write_proplist(conn, iterpool, iprop->prop_hash));
+      SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!))!",
+                                      iprop->path_or_url));
+    }
+
+  SVN_ERR(svn_ra_svn__write_tuple(conn, iterpool, "!))"));
+  svn_pool_destroy(iterpool);
   return SVN_NO_ERROR;
 }
 
@@ -2731,6 +3152,7 @@ static const svn_ra_svn_cmd_entry_t main_commands[] = {
   { "get-latest-rev",  get_latest_rev },
   { "get-dated-rev",   get_dated_rev },
   { "change-rev-prop", change_rev_prop },
+  { "change-rev-prop2",change_rev_prop2 },
   { "rev-proplist",    rev_proplist },
   { "rev-prop",        rev_prop },
   { "commit",          commit },
@@ -2756,6 +3178,7 @@ static const svn_ra_svn_cmd_entry_t main_commands[] = {
   { "replay",          replay },
   { "replay-range",    replay_range },
   { "get-deleted-rev", get_deleted_rev },
+  { "get-iprops",      get_inherited_props },
   { NULL }
 };
 
@@ -2795,7 +3218,7 @@ repos_path_valid(const char *path)
          consisting of just dots and spaces.  Win32 functions treat
          paths such as ".. " and "......." inconsistently.  Make sure
          no one can escape out of the root. */
-      if (path - s >= 2 && strspn(s, ". ") == path - s)
+      if (path - s >= 2 && strspn(s, ". ") == (size_t)(path - s))
         return FALSE;
 #else  /* ! WIN32 */
       if (path - s == 2 && s[0] == '.' && s[1] == '.')
@@ -2820,10 +3243,10 @@ repos_path_valid(const char *path)
 static svn_error_t *find_repos(const char *url, const char *root,
                                server_baton_t *b,
                                svn_ra_svn_conn_t *conn,
-                               apr_array_header_t *capabilities,
+                               const apr_array_header_t *capabilities,
                                apr_pool_t *pool)
 {
-  const char *path, *full_path, *repos_root, *fs_path;
+  const char *path, *full_path, *repos_root, *fs_path, *hooks_env;
   svn_stringbuf_t *url_buf;
 
   /* Skip past the scheme and authority part. */
@@ -2831,23 +3254,25 @@ static svn_error_t *find_repos(const char *url, const char *root,
   if (path == NULL)
     return svn_error_createf(SVN_ERR_BAD_URL, NULL,
                              "Non-svn URL passed to svn server: '%s'", url);
-  path = strchr(path, '/');
-  path = (path == NULL) ? "" : path + 1;
 
-  /* Decode URI escapes from the path. */
+  if (! b->vhost)
+    {
+      path = strchr(path, '/');
+      if (path == NULL)
+        path = "";
+    }
+  path = svn_relpath_canonicalize(path, pool);
   path = svn_path_uri_decode(path, pool);
 
-  /* Ensure that it isn't possible to escape the root by skipping leading
-     slashes and not allowing '..' segments. */
-  while (*path == '/')
-    ++path;
+  /* Ensure that it isn't possible to escape the root by disallowing
+     '..' segments. */
   if (!repos_path_valid(path))
     return svn_error_create(SVN_ERR_BAD_FILENAME, NULL,
                             "Couldn't determine repository path");
 
   /* Join the server-configured root with the client path. */
-  full_path = svn_path_join(svn_path_canonicalize(root, pool),
-                            svn_path_canonicalize(path, pool), pool);
+  full_path = svn_dirent_join(svn_dirent_canonicalize(root, pool),
+                              path, pool);
 
   /* Search for a repository in the full path. */
   repos_root = svn_repos_find_root_path(full_path, pool);
@@ -2856,7 +3281,7 @@ static svn_error_t *find_repos(const char *url, const char *root,
                              "No repository found in '%s'", url);
 
   /* Open the repository and fill in b with the resulting information. */
-  SVN_ERR(svn_repos_open(&b->repos, repos_root, pool));
+  SVN_ERR(svn_repos_open2(&b->repos, repos_root, b->fs_config, pool));
   SVN_ERR(svn_repos_remember_client_capabilities(b->repos, capabilities));
   b->fs = svn_repos_fs(b->repos);
   fs_path = full_path + strlen(repos_root);
@@ -2865,26 +3290,39 @@ static svn_error_t *find_repos(const char *url, const char *root,
   svn_path_remove_components(url_buf,
                              svn_path_component_count(b->fs_path->data));
   b->repos_url = url_buf->data;
-  b->authz_repos_name = svn_path_is_child(root, repos_root, pool);
+  b->authz_repos_name = svn_dirent_is_child(root, repos_root, pool);
   if (b->authz_repos_name == NULL)
-    b->repos_name = svn_path_basename(repos_root, pool);
+    b->repos_name = svn_dirent_basename(repos_root, pool);
   else
     b->repos_name = b->authz_repos_name;
   b->repos_name = svn_path_uri_encode(b->repos_name, pool);
 
-  /* If the svnserve configuration files have not been loaded then
-     load them from the repository. */
+  /* If the svnserve configuration has not been loaded then load it from the
+   * repository. */
   if (NULL == b->cfg)
-    SVN_ERR(load_configs(&b->cfg, &b->pwdb, &b->authzdb,
-                         svn_repos_svnserve_conf(b->repos, pool), FALSE,
-                         svn_repos_conf_dir(b->repos, pool),
-                         b, conn,
-                         pool));
+    {
+      b->base = svn_repos_conf_dir(b->repos, pool);
+
+      SVN_ERR(svn_config_read3(&b->cfg, svn_repos_svnserve_conf(b->repos, pool),
+                               FALSE, /* must_exist */
+                               FALSE, /* section_names_case_sensitive */
+                               FALSE, /* option_names_case_sensitive */
+                               pool));
+      SVN_ERR(load_pwdb_config(b, conn, pool));
+      SVN_ERR(load_authz_config(b, conn, repos_root, pool));
+    }
+  /* svnserve.conf has been loaded via the --config-file option so need
+   * to load pwdb and authz. */
+  else
+    {
+      SVN_ERR(load_pwdb_config(b, conn, pool));
+      SVN_ERR(load_authz_config(b, conn, repos_root, pool));
+    }
 
 #ifdef SVN_HAVE_SASL
   /* Should we use Cyrus SASL? */
-  svn_config_get_bool(b->cfg, &b->use_sasl, SVN_CONFIG_SECTION_SASL,
-                      SVN_CONFIG_OPTION_USE_SASL, FALSE);
+  SVN_ERR(svn_config_get_bool(b->cfg, &b->use_sasl, SVN_CONFIG_SECTION_SASL,
+                              SVN_CONFIG_OPTION_USE_SASL, FALSE));
 #endif
 
   /* Use the repository UUID as the default realm. */
@@ -2902,6 +3340,13 @@ static svn_error_t *find_repos(const char *url, const char *root,
     return error_create_and_log(SVN_ERR_RA_NOT_AUTHORIZED, NULL,
                                  "No access allowed to this repository",
                                  b, conn, pool);
+
+  /* Configure hook script environment variables. */
+  svn_config_get(b->cfg, &hooks_env, SVN_CONFIG_SECTION_GENERAL,
+                 SVN_CONFIG_OPTION_HOOKS_ENV, NULL);
+  if (hooks_env)
+    hooks_env = svn_dirent_internal_style(hooks_env, pool);
+  SVN_ERR(svn_repos_hooks_setenv(b->repos, hooks_env, pool));
 
   return SVN_NO_ERROR;
 }
@@ -2929,6 +3374,134 @@ fs_warning_func(void *baton, svn_error_t *err)
   svn_pool_clear(b->pool);
 }
 
+/* Return the normalized repository-relative path for the given PATH
+ * (may be a URL, full path or relative path) and fs contained in the
+ * server baton BATON. Allocate the result in POOL.
+ */
+static const char *
+get_normalized_repo_rel_path(void *baton,
+                             const char *path,
+                             apr_pool_t *pool)
+{
+  server_baton_t *sb = baton;
+
+  if (svn_path_is_url(path))
+    {
+      /* This is a copyfrom URL. */
+      path = svn_uri_skip_ancestor(sb->repos_url, path, pool);
+      path = svn_fspath__canonicalize(path, pool);
+    }
+  else
+    {
+      /* This is a base-relative path. */
+      if ((path)[0] != '/')
+        /* Get an absolute path for use in the FS. */
+        path = svn_fspath__join(sb->fs_path->data, path, pool);
+    }
+
+  return path;
+}
+
+/* Get the revision root for REVISION in fs given by server baton BATON
+ * and return it in *FS_ROOT. Use HEAD if REVISION is SVN_INVALID_REVNUM.
+ * Use POOL for allocations.
+ */
+static svn_error_t *
+get_revision_root(svn_fs_root_t **fs_root,
+                  void *baton,
+                  svn_revnum_t revision,
+                  apr_pool_t *pool)
+{
+  server_baton_t *sb = baton;
+
+  if (!SVN_IS_VALID_REVNUM(revision))
+    SVN_ERR(svn_fs_youngest_rev(&revision, sb->fs, pool));
+
+  SVN_ERR(svn_fs_revision_root(fs_root, sb->fs, revision, pool));
+
+  return SVN_NO_ERROR;
+}
+
+static svn_error_t *
+fetch_props_func(apr_hash_t **props,
+                 void *baton,
+                 const char *path,
+                 svn_revnum_t base_revision,
+                 apr_pool_t *result_pool,
+                 apr_pool_t *scratch_pool)
+{
+  svn_fs_root_t *fs_root;
+  svn_error_t *err;
+
+  path = get_normalized_repo_rel_path(baton, path, scratch_pool);
+  SVN_ERR(get_revision_root(&fs_root, baton, base_revision, scratch_pool));
+
+  err = svn_fs_node_proplist(props, fs_root, path, result_pool);
+  if (err && err->apr_err == SVN_ERR_FS_NOT_FOUND)
+    {
+      svn_error_clear(err);
+      *props = apr_hash_make(result_pool);
+      return SVN_NO_ERROR;
+    }
+  else if (err)
+    return svn_error_trace(err);
+
+  return SVN_NO_ERROR;
+}
+
+static svn_error_t *
+fetch_kind_func(svn_node_kind_t *kind,
+                void *baton,
+                const char *path,
+                svn_revnum_t base_revision,
+                apr_pool_t *scratch_pool)
+{
+  svn_fs_root_t *fs_root;
+
+  path = get_normalized_repo_rel_path(baton, path, scratch_pool);
+  SVN_ERR(get_revision_root(&fs_root, baton, base_revision, scratch_pool));
+
+  SVN_ERR(svn_fs_check_path(kind, fs_root, path, scratch_pool));
+
+  return SVN_NO_ERROR;
+}
+
+static svn_error_t *
+fetch_base_func(const char **filename,
+                void *baton,
+                const char *path,
+                svn_revnum_t base_revision,
+                apr_pool_t *result_pool,
+                apr_pool_t *scratch_pool)
+{
+  svn_stream_t *contents;
+  svn_stream_t *file_stream;
+  const char *tmp_filename;
+  svn_fs_root_t *fs_root;
+  svn_error_t *err;
+
+  path = get_normalized_repo_rel_path(baton, path, scratch_pool);
+  SVN_ERR(get_revision_root(&fs_root, baton, base_revision, scratch_pool));
+
+  err = svn_fs_file_contents(&contents, fs_root, path, scratch_pool);
+  if (err && err->apr_err == SVN_ERR_FS_NOT_FOUND)
+    {
+      svn_error_clear(err);
+      *filename = NULL;
+      return SVN_NO_ERROR;
+    }
+  else if (err)
+    return svn_error_trace(err);
+  SVN_ERR(svn_stream_open_unique(&file_stream, &tmp_filename, NULL,
+                                 svn_io_file_del_on_pool_cleanup,
+                                 scratch_pool, scratch_pool));
+  SVN_ERR(svn_stream_copy3(contents, file_stream, NULL, NULL, scratch_pool));
+
+  *filename = apr_pstrdup(result_pool, tmp_filename);
+
+  return SVN_NO_ERROR;
+}
+
 svn_error_t *serve(svn_ra_svn_conn_t *conn, serve_params_t *params,
                    apr_pool_t *pool)
 {
@@ -2938,43 +3511,76 @@ svn_error_t *serve(svn_ra_svn_conn_t *conn, serve_params_t *params,
   apr_array_header_t *caplist, *cap_words;
   server_baton_t b;
   fs_warning_baton_t warn_baton;
-  svn_stringbuf_t *cap_log = svn_stringbuf_create("", pool);
+  svn_stringbuf_t *cap_log = svn_stringbuf_create_empty(pool);
 
   b.tunnel = params->tunnel;
   b.tunnel_user = get_tunnel_user(params, pool);
   b.read_only = params->read_only;
   b.user = NULL;
+  b.username_case = params->username_case;
+  b.authz_user = NULL;
+  b.base = params->base;
   b.cfg = params->cfg;
-  b.pwdb = params->pwdb;
-  b.authzdb = params->authzdb;
+  b.pwdb = NULL;
+  b.authzdb = NULL;
   b.realm = NULL;
   b.log_file = params->log_file;
   b.pool = pool;
   b.use_sasl = FALSE;
+  b.vhost = params->vhost;
+
+  /* construct FS configuration parameters */
+  b.fs_config = apr_hash_make(pool);
+  svn_hash_sets(b.fs_config, SVN_FS_CONFIG_FSFS_CACHE_DELTAS,
+                params->cache_txdeltas ? "1" :"0");
+  svn_hash_sets(b.fs_config, SVN_FS_CONFIG_FSFS_CACHE_FULLTEXTS,
+                params->cache_fulltexts ? "1" :"0");
+  svn_hash_sets(b.fs_config, SVN_FS_CONFIG_FSFS_CACHE_REVPROPS,
+                params->cache_revprops ? "1" :"0");
 
   /* Send greeting.  We don't support version 1 any more, so we can
    * send an empty mechlist. */
-  SVN_ERR(svn_ra_svn_write_cmd_response(conn, pool, "nn()(wwwwwww)",
-                                        (apr_uint64_t) 2, (apr_uint64_t) 2,
-                                        SVN_RA_SVN_CAP_EDIT_PIPELINE,
-                                        SVN_RA_SVN_CAP_SVNDIFF1,
-                                        SVN_RA_SVN_CAP_ABSENT_ENTRIES,
-                                        SVN_RA_SVN_CAP_COMMIT_REVPROPS,
-                                        SVN_RA_SVN_CAP_DEPTH,
-                                        SVN_RA_SVN_CAP_LOG_REVPROPS,
-                                        SVN_RA_SVN_CAP_PARTIAL_REPLAY));
+  if (params->compression_level > 0)
+    SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "nn()(wwwwwwwwwww)",
+                                           (apr_uint64_t) 2, (apr_uint64_t) 2,
+                                           SVN_RA_SVN_CAP_EDIT_PIPELINE,
+                                           SVN_RA_SVN_CAP_SVNDIFF1,
+                                           SVN_RA_SVN_CAP_ABSENT_ENTRIES,
+                                           SVN_RA_SVN_CAP_COMMIT_REVPROPS,
+                                           SVN_RA_SVN_CAP_DEPTH,
+                                           SVN_RA_SVN_CAP_LOG_REVPROPS,
+                                           SVN_RA_SVN_CAP_ATOMIC_REVPROPS,
+                                           SVN_RA_SVN_CAP_PARTIAL_REPLAY,
+                                           SVN_RA_SVN_CAP_INHERITED_PROPS,
+                                           SVN_RA_SVN_CAP_EPHEMERAL_TXNPROPS,
+                                           SVN_RA_SVN_CAP_GET_FILE_REVS_REVERSE
+                                           ));
+  else
+    SVN_ERR(svn_ra_svn__write_cmd_response(conn, pool, "nn()(wwwwwwwwww)",
+                                           (apr_uint64_t) 2, (apr_uint64_t) 2,
+                                           SVN_RA_SVN_CAP_EDIT_PIPELINE,
+                                           SVN_RA_SVN_CAP_ABSENT_ENTRIES,
+                                           SVN_RA_SVN_CAP_COMMIT_REVPROPS,
+                                           SVN_RA_SVN_CAP_DEPTH,
+                                           SVN_RA_SVN_CAP_LOG_REVPROPS,
+                                           SVN_RA_SVN_CAP_ATOMIC_REVPROPS,
+                                           SVN_RA_SVN_CAP_PARTIAL_REPLAY,
+                                           SVN_RA_SVN_CAP_INHERITED_PROPS,
+                                           SVN_RA_SVN_CAP_EPHEMERAL_TXNPROPS,
+                                           SVN_RA_SVN_CAP_GET_FILE_REVS_REVERSE
+                                           ));
 
   /* Read client response, which we assume to be in version 2 format:
    * version, capability list, and client URL; then we do an auth
    * request. */
-  SVN_ERR(svn_ra_svn_read_tuple(conn, pool, "nlc?c(?c)",
-                                &ver, &caplist, &client_url,
-                                &ra_client_string,
-                                &client_string));
+  SVN_ERR(svn_ra_svn__read_tuple(conn, pool, "nlc?c(?c)",
+                                 &ver, &caplist, &client_url,
+                                 &ra_client_string,
+                                 &client_string));
   if (ver != 2)
     return SVN_NO_ERROR;
 
-  client_url = svn_path_canonicalize(client_url, pool);
+  client_url = svn_uri_canonicalize(client_url, pool);
   SVN_ERR(svn_ra_svn_set_capabilities(conn, caplist));
 
   /* All released versions of Subversion support edit-pipeline,
@@ -3025,10 +3631,10 @@ svn_error_t *serve(svn_ra_svn_conn_t *conn, serve_params_t *params,
     {
       log_error(err, b.log_file, svn_ra_svn_conn_remote_host(conn),
                 b.user, NULL, pool);
-      io_err = svn_ra_svn_write_cmd_failure(conn, pool, err);
+      io_err = svn_ra_svn__write_cmd_failure(conn, pool, err);
       svn_error_clear(err);
       SVN_ERR(io_err);
-      return svn_ra_svn_flush(conn, pool);
+      return svn_ra_svn__flush(conn, pool);
     }
 
   /* Log the open. */
@@ -3064,12 +3670,25 @@ svn_error_t *serve(svn_ra_svn_conn_t *conn, serve_params_t *params,
     SVN_ERR(svn_repos_has_capability(b.repos, &supports_mergeinfo,
                                      SVN_REPOS_CAPABILITY_MERGEINFO, pool));
 
-    SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "w(cc(!",
-                                   "success", uuid, b.repos_url));
+    SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "w(cc(!",
+                                    "success", uuid, b.repos_url));
     if (supports_mergeinfo)
-      SVN_ERR(svn_ra_svn_write_word(conn, pool, SVN_RA_SVN_CAP_MERGEINFO));
-    SVN_ERR(svn_ra_svn_write_tuple(conn, pool, "!))"));
+      SVN_ERR(svn_ra_svn__write_word(conn, pool, SVN_RA_SVN_CAP_MERGEINFO));
+    SVN_ERR(svn_ra_svn__write_tuple(conn, pool, "!))"));
   }
 
-  return svn_ra_svn_handle_commands2(conn, pool, main_commands, &b, FALSE);
+  /* Set up editor shims. */
+  {
+    svn_delta_shim_callbacks_t *callbacks =
+                                svn_delta_shim_callbacks_default(pool);
+
+    callbacks->fetch_base_func = fetch_base_func;
+    callbacks->fetch_props_func = fetch_props_func;
+    callbacks->fetch_kind_func = fetch_kind_func;
+    callbacks->fetch_baton = &b;
+
+    SVN_ERR(svn_ra_svn__set_shim_callbacks(conn, callbacks));
+  }
+
+  return svn_ra_svn__handle_commands2(conn, pool, main_commands, &b, FALSE);
 }

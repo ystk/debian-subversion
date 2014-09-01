@@ -1,17 +1,22 @@
 /* trail.c : backing out of aborted Berkeley DB transactions
  *
  * ====================================================================
- * Copyright (c) 2000-2004, 2009 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -91,7 +96,7 @@ begin_trail(trail_t **trail_p,
          a coding problem (and will likely hang the repository anyway). */
       SVN_ERR_ASSERT(! bfd->in_txn_trail);
 
-      SVN_ERR(BDB_WRAP(fs, "beginning Berkeley DB transaction",
+      SVN_ERR(BDB_WRAP(fs, N_("beginning Berkeley DB transaction"),
                        bfd->bdb->env->txn_begin(bfd->bdb->env, 0,
                                                 &trail->db_txn, 0)));
       bfd->in_txn_trail = TRUE;
@@ -126,7 +131,7 @@ abort_trail(trail_t *trail)
          see the returned error than to abort.  An obvious example is
          when DB_TXN->abort() returns DB_RUNRECOVERY. */
       bfd->in_txn_trail = FALSE;
-      SVN_ERR(BDB_WRAP(fs, "aborting Berkeley DB transaction",
+      SVN_ERR(BDB_WRAP(fs, N_("aborting Berkeley DB transaction"),
                        trail->db_txn->abort(trail->db_txn)));
     }
   svn_pool_destroy(trail->pool);
@@ -150,7 +155,7 @@ commit_trail(trail_t *trail)
       /* See comment [**] in abort_trail() above.
          An error during txn commit will abort the transaction anyway. */
       bfd->in_txn_trail = FALSE;
-      SVN_ERR(BDB_WRAP(fs, "committing Berkeley DB transaction",
+      SVN_ERR(BDB_WRAP(fs, N_("committing Berkeley DB transaction"),
                        trail->db_txn->commit(trail->db_txn, 0)));
     }
 

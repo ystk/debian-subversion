@@ -1,17 +1,22 @@
 /* node-origins-table.c : operations on the `node-origins' table
  *
  * ====================================================================
- * Copyright (c) 2007 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -119,7 +124,7 @@ svn_error_t *svn_fs_bdb__set_node_origin(svn_fs_t *fs,
   /* Create a value from our ORIGIN_ID, and add this record to the table. */
   svn_fs_base__id_to_dbt(&value, origin_id, pool);
   svn_fs_base__trail_debug(trail, "node-origins", "put");
-  return BDB_WRAP(fs, _("storing node-origins record"),
+  return BDB_WRAP(fs, N_("storing node-origins record"),
                   bfd->node_origins->put(bfd->node_origins, trail->db_txn,
                                          &key, &value, 0));
 }
@@ -134,7 +139,7 @@ svn_error_t *svn_fs_bdb__delete_node_origin(svn_fs_t *fs,
 
   svn_fs_base__str_to_dbt(&key, node_id);
   svn_fs_base__trail_debug(trail, "node-origins", "del");
-  return BDB_WRAP(fs, "deleting entry from 'node-origins' table",
+  return BDB_WRAP(fs, N_("deleting entry from 'node-origins' table"),
                   bfd->node_origins->del(bfd->node_origins,
                                          trail->db_txn, &key, 0));
 }

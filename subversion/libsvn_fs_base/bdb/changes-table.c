@@ -1,17 +1,22 @@
 /* changes-table.c : operations on the `changes' table
  *
  * ====================================================================
- * Copyright (c) 2000-2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -20,6 +25,7 @@
 #include <apr_hash.h>
 #include <apr_tables.h>
 
+#include "svn_hash.h"
 #include "svn_fs.h"
 #include "svn_pools.h"
 #include "svn_path.h"
@@ -34,6 +40,7 @@
 #include "changes-table.h"
 
 #include "private/svn_fs_util.h"
+#include "private/svn_fspath.h"
 #include "svn_private_config.h"
 
 
@@ -84,7 +91,7 @@ svn_fs_bdb__changes_add(svn_fs_t *fs,
   svn_fs_base__str_to_dbt(&query, key);
   svn_fs_base__skel_to_dbt(&value, skel, pool);
   svn_fs_base__trail_debug(trail, "changes", "put");
-  return BDB_WRAP(fs, _("creating change"),
+  return BDB_WRAP(fs, N_("creating change"),
                   bfd->changes->put(bfd->changes, trail->db_txn,
                                     &query, &value, 0));
 }
@@ -108,7 +115,7 @@ svn_fs_bdb__changes_delete(svn_fs_t *fs,
      error should be propagated to the caller, though.  */
   if ((db_err) && (db_err != DB_NOTFOUND))
     {
-      SVN_ERR(BDB_WRAP(fs, _("deleting changes"), db_err));
+      SVN_ERR(BDB_WRAP(fs, N_("deleting changes"), db_err));
     }
 
   return SVN_NO_ERROR;
@@ -126,7 +133,7 @@ fold_change(apr_hash_t *changes,
   svn_fs_path_change2_t *old_change, *new_change;
   const char *path;
 
-  if ((old_change = apr_hash_get(changes, change->path, APR_HASH_KEY_STRING)))
+  if ((old_change = svn_hash_gets(changes, change->path)))
     {
       /* This path already exists in the hash, so we have to merge
          this change into the already existing one. */
@@ -226,7 +233,7 @@ fold_change(apr_hash_t *changes,
       /* This change is new to the hash, so make a new public change
          structure from the internal one (in the hash's pool), and dup
          the path into the hash's pool, too. */
-      new_change = svn_fs__path_change2_create(
+      new_change = svn_fs__path_change_create_internal(
                        svn_fs_base__id_copy(change->noderev_id, pool),
                        change->kind,
                        pool);
@@ -238,7 +245,7 @@ fold_change(apr_hash_t *changes,
     }
 
   /* Add (or update) this path. */
-  apr_hash_set(changes, path, APR_HASH_KEY_STRING, new_change);
+  svn_hash_sets(changes, path, new_change);
 
   return SVN_NO_ERROR;
 }
@@ -262,7 +269,7 @@ svn_fs_bdb__changes_fetch(apr_hash_t **changes_p,
   /* Get a cursor on the first record matching KEY, and then loop over
      the records, adding them to the return array. */
   svn_fs_base__trail_debug(trail, "changes", "cursor");
-  SVN_ERR(BDB_WRAP(fs, _("creating cursor for reading changes"),
+  SVN_ERR(BDB_WRAP(fs, N_("creating cursor for reading changes"),
                    bfd->changes->cursor(bfd->changes, trail->db_txn,
                                         &cursor, 0)));
 
@@ -319,14 +326,14 @@ svn_fs_bdb__changes_fetch(apr_hash_t **changes_p,
               /* KEY is the path. */
               const void *hashkey;
               apr_ssize_t klen;
+              const char *child_relpath;
+
               apr_hash_this(hi, &hashkey, &klen, NULL);
 
-              /* If we come across our own path, ignore it. */
-              if (strcmp(change->path, hashkey) == 0)
-                continue;
-
-              /* If we come across a child of our path, remove it. */
-              if (svn_path_is_child(change->path, hashkey, subpool))
+              /* If we come across our own path, ignore it.
+                 If we come across a child of our path, remove it. */
+              child_relpath = svn_fspath__skip_ancestor(change->path, hashkey);
+              if (child_relpath && *child_relpath)
                 apr_hash_set(changes, hashkey, klen, NULL);
             }
         }
@@ -346,7 +353,7 @@ svn_fs_bdb__changes_fetch(apr_hash_t **changes_p,
      finished.  Just return the (possibly empty) array.  Any other
      error, however, needs to get handled appropriately.  */
   if (db_err && (db_err != DB_NOTFOUND))
-    err = BDB_WRAP(fs, _("fetching changes"), db_err);
+    err = BDB_WRAP(fs, N_("fetching changes"), db_err);
 
  cleanup:
   /* Close the cursor. */
@@ -354,12 +361,12 @@ svn_fs_bdb__changes_fetch(apr_hash_t **changes_p,
 
   /* If we had an error prior to closing the cursor, return the error. */
   if (err)
-    return err;
+    return svn_error_trace(err);
 
   /* If our only error thus far was when we closed the cursor, return
      that error. */
   if (db_c_err)
-    SVN_ERR(BDB_WRAP(fs, _("closing changes cursor"), db_c_err));
+    SVN_ERR(BDB_WRAP(fs, N_("closing changes cursor"), db_c_err));
 
   /* Finally, set our return variable and get outta here. */
   *changes_p = changes;
@@ -385,7 +392,7 @@ svn_fs_bdb__changes_fetch_raw(apr_array_header_t **changes_p,
   /* Get a cursor on the first record matching KEY, and then loop over
      the records, adding them to the return array. */
   svn_fs_base__trail_debug(trail, "changes", "cursor");
-  SVN_ERR(BDB_WRAP(fs, _("creating cursor for reading changes"),
+  SVN_ERR(BDB_WRAP(fs, N_("creating cursor for reading changes"),
                    bfd->changes->cursor(bfd->changes, trail->db_txn,
                                         &cursor, 0)));
 
@@ -429,7 +436,7 @@ svn_fs_bdb__changes_fetch_raw(apr_array_header_t **changes_p,
      finished.  Just return the (possibly empty) array.  Any other
      error, however, needs to get handled appropriately.  */
   if (db_err && (db_err != DB_NOTFOUND))
-    err = BDB_WRAP(fs, _("fetching changes"), db_err);
+    err = BDB_WRAP(fs, N_("fetching changes"), db_err);
 
  cleanup:
   /* Close the cursor. */
@@ -437,12 +444,12 @@ svn_fs_bdb__changes_fetch_raw(apr_array_header_t **changes_p,
 
   /* If we had an error prior to closing the cursor, return the error. */
   if (err)
-    return err;
+    return svn_error_trace(err);
 
   /* If our only error thus far was when we closed the cursor, return
      that error. */
   if (db_c_err)
-    SVN_ERR(BDB_WRAP(fs, _("closing changes cursor"), db_c_err));
+    SVN_ERR(BDB_WRAP(fs, N_("closing changes cursor"), db_c_err));
 
   /* Finally, set our return variable and get outta here. */
   *changes_p = changes;

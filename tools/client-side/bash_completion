@@ -1,3 +1,22 @@
+# ------------------------------------------------------------
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+# ------------------------------------------------------------
+
 # Programmable completion for the Subversion svn command under bash. Source
 # this file (or on some systems add it to ~/.bash_completion and start a new
 # shell) and bash's completion mechanism will know all about svn's options!
@@ -116,10 +135,11 @@ function _svn_lls()
 #      suggested for 'revert', only not svn-managed files for 'add', and so on.
 #      Possible values are:
 #      - username: guess usernames from ~/.subversion/auth/...
+#      - urls: guess urls from ~/.subversion/auth/... or others
 #      - svnstatus: use 'svn status' for completion
 #      - recurse: allow recursion (expensive)
 #      - externals: recurse into externals (very expensive)
-#     Both former options are reasonable, but beware that both later options
+#     Former options are reasonable, but beware that both later options
 #     may be unadvisable if used on large working copies.
 #     None of these costly completions are activated by default.
 #     Argument completion outside a working copy results in an error message.
@@ -131,6 +151,9 @@ function _svn_lls()
 # - obsolete commands could be removed? (e.g. resolved)
 # - completion does not work properly when editing in the middle of the line
 #   status/previous are those at the end of the line, not at the entry position
+# - url completion should select more cases where it is relevant
+# - url completion of http:// schemas could suggest sub directories?
+# - add completion for experimental 'obliterate' feature?
 _svn()
 {
 	local cur cmds cmdOpts pOpts mOpts rOpts qOpts nOpts optsParam opt
@@ -142,9 +165,9 @@ _svn()
 	cmds='add blame annotate praise cat changelist cl checkout co cleanup'
 	cmds="$cmds commit ci copy cp delete remove rm diff export help import"
 	cmds="$cmds info list ls lock log merge mergeinfo mkdir move mv rename"
-	cmds="$cmds propdel pdel propedit pedit propget pget proplist plist"
-	cmds="$cmds propset pset resolve resolved revert status switch unlock"
-	cmds="$cmds update"
+	cmds="$cmds patch propdel pdel propedit pedit propget pget proplist"
+	cmds="$cmds plist propset pset relocate resolve resolved revert status"
+	cmds="$cmds  switch unlock update upgrade"
 
 	# help options have a strange command status...
 	local helpOpts='--help -h'
@@ -159,12 +182,14 @@ _svn()
 	optsParam="$optsParam|--old|--new|--config-dir|--config-option"
 	optsParam="$optsParam|--native-eol|-l|--limit|-c|--change"
 	optsParam="$optsParam|--depth|--set-depth|--with-revprop"
-	optsParam="$optsParam|--changelist|--accept|--show-revs"
+	optsParam="$optsParam|--cl|--changelist|--accept|--show-revs"
 
 	# svn:* and other (env SVN_BASH_*_PROPS) properties
 	local svnProps revProps allProps psCmds propCmds
 
-	# svn and user configured file properties
+	# svn and user configured "file" (or directory) properties
+	# the "svn:mergeinfo" prop is not included by default because it is
+	# managed automatically, so there should be no need to edit it by hand.
 	svnProps="svn:keywords svn:executable svn:needs-lock svn:externals
 	          svn:ignore svn:eol-style svn:mime-type $SVN_BASH_FILE_PROPS"
 
@@ -177,6 +202,9 @@ _svn()
 	# subcommands that expect property names
 	psCmds='propset|pset|ps'
 	propCmds="$psCmds|propget|pget|pg|propedit|pedit|pe|propdel|pdel|pd"
+
+	# possible URL schemas to access a subversion server
+	local urlSchemas='file:/// http:// https:// svn:// svn+ssh://'
 
 	# Parse arguments and set various variables about what was found.
 	#
@@ -360,6 +388,45 @@ _svn()
 	    return 0
 	fi
 
+	# URL completion
+	if [[ $cmd == @(co|checkout|ls|list) && $stat = 'arg' && \
+			$SVN_BASH_COMPL_EXT == *urls* ]]
+	then
+		# see about COMP_WORDBREAKS workaround in prop completion
+		if [[ $cur == file:* ]]
+		then
+			# file completion for file:// urls
+			local where=${cur/file:/}
+			COMPREPLY=( $(compgen -d -S '/' -X '*/.*' -- $where ) )
+			return
+		elif [[ $cur == *:* ]]
+		then
+			# get known urls
+			local urls= file=
+			for file in ~/.subversion/auth/svn.simple/* ; do
+				if [ -r $file ] ; then
+					local url=$(_svn_read_hashfile svn:realmstring < $file)
+					url=${url/*</}
+					url=${url/>*/}
+					urls="$urls $url"
+				fi
+			done
+
+			# only suggest/show possible suffixes
+			local prefix=${cur%:*} suffix=${cur#*:} c= choices=
+			for c in $urls ; do
+				[[ $c == $prefix:* ]] && choices="$choices ${c#*:}"
+			done
+
+			COMPREPLY=( $(compgen -W "$choices" -- $suffix ) )
+			return
+		else
+			# show schemas
+			COMPREPLY=( $(compgen -W "$urlSchemas" -- $cur) )
+			return
+		fi
+	fi
+
 	if [[ $cmd = 'merge' || $cmd = 'mergeinfo' ]]
 	then
 	  local here=$(_svn_info URL)
@@ -412,7 +479,7 @@ _svn()
 
 	    [[ $previous = '--extensions' || $previous = '-x' ]] && \
 		values="--unified --ignore-space-change \
-   		        --ignore-all-space --ignore-eol-style"
+		   --ignore-all-space --ignore-eol-style --show-c-functions"
 
 	    [[ $previous = '--depth' ]] && \
 		values='empty files immediates infinity'
@@ -427,8 +494,8 @@ _svn()
 		    # from svn help resolve
 		    values='base working mine-full theirs-full'
 		else # checkout merge switch update
-		    # not implemented yet: mine-conflict theirs-conflict
-		    values='postpone base mine-full theirs-full edit launch'
+		    values="postpone base mine-full theirs-full edit launch \
+			mine-conflict theirs-conflict"
 		fi
 	    }
 
@@ -487,6 +554,9 @@ _svn()
 	    # Thus the handling is reprogrammed here...
 	    # The code assumes that property names look like *:*,
 	    # but it also works reasonably well with simple names.
+	    #
+	    # This hack is broken in bash4... not sure what to do about it,
+            # especially while keeping the bash3 compatibility:-(
 	    local choices=
 
 	    if [[ $cur == *:* ]]
@@ -575,14 +645,6 @@ _svn()
 	    COMPREPLY=( $( compgen -W "$values" -- $cur ) )
 	    # special case for --file... return even if within an option
 	    [[ ${COMPREPLY} ]] && return 0
-	fi
-
-	# force mandatory --accept option for 'resolve' command
-	if [[ $cmd = 'resolve' && ! $acceptOpt ]]
-	then
-	    COMPREPLY=( $( compgen -W '--accept' -- $cur ) )
-	    # force option now! others will be available on later completions
-	    return 0
 	fi
 
 	# maximum number of additional arguments expected in various forms
@@ -718,12 +780,14 @@ _svn()
 	fi
 
 	# otherwise build possible options for the command
-	pOpts="--username --password --no-auth-cache --non-interactive"
+	pOpts="--username --password --no-auth-cache --non-interactive \
+	       --trust-server-cert --force-interactive"
 	mOpts="-m --message -F --file --encoding --force-log --with-revprop"
 	rOpts="-r --revision"
 	qOpts="-q --quiet"
 	nOpts="-N --non-recursive --depth"
 	gOpts="-g --use-merge-history"
+	cOpts="--cl --changelist"
 
 	cmdOpts=
 	case $cmd in
@@ -742,22 +806,24 @@ _svn()
 		cmdOpts="$rOpts $pOpts"
 		;;
 	changelist|cl)
-		cmdOpts="--targets $pOpts $qOpts --changelist \
+		cmdOpts="--targets $pOpts $qOpts $cOpts \
                          -R --recursive --depth --remove"
 		;;
 	checkout|co)
 		cmdOpts="$rOpts $qOpts $nOpts $pOpts --ignore-externals \
-                         --force --accept"
+                         --force"
 		;;
 	cleanup)
 		cmdOpts="--diff3-cmd $pOpts"
 		;;
 	commit|ci)
 		cmdOpts="$mOpts $qOpts $nOpts --targets --editor-cmd $pOpts \
-		         --no-unlock --changelist --keep-changelists"
+		         --no-unlock $cOpts --keep-changelists \
+		         --include-externals"
 		;;
 	copy|cp)
-		cmdOpts="$mOpts $rOpts $qOpts --editor-cmd $pOpts --parents"
+		cmdOpts="$mOpts $rOpts $qOpts --editor-cmd $pOpts --parents \
+		         --ignore-externals"
 		;;
 	delete|del|remove|rm)
 		cmdOpts="--force $mOpts $qOpts --targets --editor-cmd $pOpts \
@@ -766,11 +832,14 @@ _svn()
 	diff|di)
 		cmdOpts="$rOpts -x --extensions --diff-cmd --no-diff-deleted \
 		         $nOpts $pOpts --force --old --new --notice-ancestry \
-		         -c --change --summarize --changelist --xml"
+		         -c --change --summarize $cOpts --xml --git \
+		         --internal-diff --show-copies-as-adds \
+		         --ignore-properties --properties-only --no-diff-added \
+		         --patch-compatible"
 		;;
 	export)
 		cmdOpts="$rOpts $qOpts $pOpts $nOpts --force --native-eol \
-                         --ignore-externals"
+                         --ignore-externals --ignore-keywords"
 		;;
 	help|h|\?)
 		cmdOpts=
@@ -781,11 +850,11 @@ _svn()
 		;;
 	info)
 		cmdOpts="$pOpts $rOpts --targets -R --recursive --depth \
-                         --incremental --xml --changelist"
+                         --incremental --xml $cOpts"
 		;;
 	list|ls)
 		cmdOpts="$rOpts -v --verbose -R --recursive $pOpts \
-                         --incremental --xml --depth"
+                         --incremental --xml --depth --include-externals"
 		;;
 	lock)
 		cmdOpts="-m --message -F --file --encoding --force-log \
@@ -794,25 +863,32 @@ _svn()
 	log)
 		cmdOpts="$rOpts -v --verbose --targets $pOpts --stop-on-copy \
 		         --incremental --xml $qOpts -l --limit -c --change \
-                         $gOpts --with-all-revprops --with-revprop"
+                         $gOpts --with-all-revprops --with-revprop --depth \
+		         --diff --diff-cmd -x --extensions --internal-diff \
+		         --with-no-revprops --search --search-and"
 		;;
 	merge)
 		cmdOpts="$rOpts $nOpts $qOpts --force --dry-run --diff3-cmd \
 		         $pOpts --ignore-ancestry -c --change -x --extensions \
-                         --record-only --accept --reintegrate"
+                         --record-only --accept --reintegrate \
+		         --allow-mixed-revisions -v --verbose"
 		;;
 	mergeinfo)
-	        cmdOpts="$rOpts $pOpts --show-revs"
+	        cmdOpts="$rOpts $pOpts --depth --show-revs -R --recursive"
 		;;
 	mkdir)
 		cmdOpts="$mOpts $qOpts --editor-cmd $pOpts --parents"
 		;;
 	move|mv|rename|ren)
 		cmdOpts="$mOpts $rOpts $qOpts --force --editor-cmd $pOpts \
-                         --parents"
+                         --parents --allow-mixed-revisions"
+		;;
+	patch)
+		cmdOpts="$qOpts $pOpts --dry-run --ignore-whitespace \
+			--reverse-diff --strip"
 		;;
 	propdel|pdel|pd)
-		cmdOpts="$qOpts -R --recursive $rOpts $pOpts --changelist \
+		cmdOpts="$qOpts -R --recursive $rOpts $pOpts $cOpts \
                          --depth"
 		[[ $isRevProp || ! $prop ]] && cmdOpts="$cmdOpts --revprop"
 		;;
@@ -822,20 +898,23 @@ _svn()
 		    cmdOpts="$cmdOpts --revprop $rOpts"
 		;;
 	propget|pget|pg)
-	        cmdOpts="-v --verbose -R --recursive $rOpts --strict $pOpts --changelist \
-                         --depth --xml"
+	        cmdOpts="-v --verbose -R --recursive $rOpts --strict \
+		         $pOpts $cOpts --depth --xml --show-inherited-props"
 		[[ $isRevProp || ! $prop ]] && cmdOpts="$cmdOpts --revprop"
 		;;
 	proplist|plist|pl)
 		cmdOpts="-v --verbose -R --recursive $rOpts --revprop $qOpts \
-		         $pOpts --changelist --depth --xml"
+		         $pOpts $cOpts --depth --xml --show-inherited-props"
 		;;
 	propset|pset|ps)
 		cmdOpts="$qOpts --targets -R --recursive \
-		         --encoding $pOpts --force --changelist --depth"
+		         --encoding $pOpts --force $cOpts --depth"
 		[[ $isRevProp || ! $prop ]] && \
 		    cmdOpts="$cmdOpts --revprop $rOpts"
 		[[ $val ]] || cmdOpts="$cmdOpts -F --file"
+		;;
+        relocate)
+		cmdOpts="--ignore-externals $pOpts"
 		;;
         resolve)
                 cmdOpts="--targets -R --recursive $qOpts $pOpts --accept \
@@ -845,25 +924,29 @@ _svn()
 		cmdOpts="--targets -R --recursive $qOpts $pOpts --depth"
 		;;
 	revert)
-		cmdOpts="--targets -R --recursive $qOpts --changelist \
+		cmdOpts="--targets -R --recursive $qOpts $cOpts \
                          --depth $pOpts"
 		;;
 	status|stat|st)
 		cmdOpts="-u --show-updates -v --verbose $nOpts $qOpts $pOpts \
 		         --no-ignore --ignore-externals --incremental --xml \
-                         --changelist"
+                         $cOpts"
 		;;
 	switch|sw)
 		cmdOpts="--relocate $rOpts $nOpts $qOpts $pOpts --diff3-cmd \
-                         --force --accept --ignore-externals --set-depth"
+                         --force --accept --ignore-externals --set-depth \
+		         --ignore-ancestry"
 		;;
 	unlock)
 		cmdOpts="--targets --force $pOpts"
 		;;
 	update|up)
 		cmdOpts="$rOpts $nOpts $qOpts $pOpts --diff3-cmd \
-                         --ignore-externals --force --accept --changelist \
-                         --editor-cmd --set-depth"
+                         --ignore-externals --force --accept $cOpts \
+                         --parents --editor-cmd --set-depth"
+		;;
+	upgrade)
+		cmdOpts="$qOpts $pOpts"
 		;;
 	*)
 		;;
@@ -947,9 +1030,9 @@ _svnadmin ()
 	cur=${COMP_WORDS[COMP_CWORD]}
 
 	# Possible expansions, without pure-prefix abbreviations such as "h".
-	cmds='crashtest create deltify dump help hotcopy list-dblogs \
-	      list-unused-dblogs load lslocks lstxns pack recover rmlocks \
-	      rmtxns setlog setrevprop setuuid upgrade verify --version'
+	cmds='crashtest create deltify dump freeze help hotcopy list-dblogs \
+	      list-unused-dblogs load lock lslocks lstxns pack recover rmlocks \
+	      rmtxns setlog setrevprop setuuid unlock upgrade verify --version'
 
 	if [[ $COMP_CWORD -eq 1 ]] ; then
 		COMPREPLY=( $( compgen -W "$cmds" -- $cur ) )
@@ -958,7 +1041,8 @@ _svnadmin ()
 
 	# options that require a parameter
 	# note: continued lines must end '|' continuing lines must start '|'
-	optsParam="-r|--revision|--parent-dir|--fs-type"
+	optsParam="-r|--revision|--parent-dir|--fs-type|-M|--memory-cache-size"
+	optsParam="$optsParam|-F|--file"
 
 	# if not typing an option, or if the previous option required a
 	# parameter, then fallback on ordinary filename expansion
@@ -973,13 +1057,18 @@ _svnadmin ()
 	case ${COMP_WORDS[1]} in
 	create)
 		cmdOpts="--bdb-txn-nosync --bdb-log-keep --config-dir \
-		         --fs-type --pre-1.4-compatible --pre-1.5-compatible"
+		         --fs-type --pre-1.4-compatible --pre-1.5-compatible \
+		         --pre-1.6-compatible --compatible-version"
 		;;
 	deltify)
 		cmdOpts="-r --revision -q --quiet"
 		;;
 	dump)
-		cmdOpts="-r --revision --incremental -q --quiet --deltas"
+		cmdOpts="-r --revision --incremental -q --quiet --deltas \
+		         -M --memory-cache-size"
+		;;
+	freeze)
+		cmdOpts="-F --file"
 		;;
 	help|h|\?)
 		cmdOpts="$cmds"
@@ -989,7 +1078,11 @@ _svnadmin ()
 		;;
 	load)
 		cmdOpts="--ignore-uuid --force-uuid --parent-dir -q --quiet \
-		         --use-pre-commit-hook --use-post-commit-hook"
+		         --use-pre-commit-hook --use-post-commit-hook \
+		         --bypass-prop-validation -M --memory-cache-size"
+		;;
+	lock|unlock)
+		cmdOpts="--bypass-hooks"
 		;;
 	recover)
 		cmdOpts="--wait"
@@ -1033,6 +1126,10 @@ _svnadmin ()
 		--help)          cmdOpts=${cmdOpts/ -h / } ;;
 		-r)              cmdOpts=${cmdOpts/ --revision / } ;;
 		--revision)      cmdOpts=${cmdOpts/ -r / } ;;
+		-F)              cmdOpts=${cmdOpts/ --file / } ;;
+		--file)          cmdOpts=${cmdOpts/ -F / } ;;
+		-M)              cmdOpts=${cmdOpts/ --memory-cache-size / } ;;
+		--memory-cache-size) cmdOpts=${cmdOpts/ --M / } ;;
 		esac
 
 		# skip next option if this one requires a parameter
@@ -1330,3 +1427,88 @@ _svnsync ()
 	return 0
 }
 complete -F _svnsync -o default svnsync
+
+# reasonable completion for 'svnversion'
+_svnversion ()
+{
+	local cmdOpts=" -n --no-newline -c --committed -h --help --version "
+	local cur=${COMP_WORDS[COMP_CWORD]}
+
+	COMPREPLY=()
+
+	# parse current options
+	local options= wcpath= trailurl= last='none' stat= opt= i=-1 isCur=
+	for opt in ${COMP_WORDS[@]}
+	do
+		[[ $i -eq $COMP_CWORD ]] && stat=$last
+		let i++
+
+		# are we processing the current word?
+		isCur=
+		[[ $i -eq $COMP_CWORD ]] && isCur=1
+
+		# skip first command, should be 'svnversion'
+		if [ $last = 'none' ] ; then
+			last='first'
+			continue
+		fi
+
+		# get options
+		if [[ $last != 'arg' && $opt == -* ]]
+		then
+			# if '--' is at the current position, it means that we are looking
+			# for '--*' options, and not the end of option processing.
+			if [[ $opt = '--' && ! $isCur ]]
+			then
+				last='arg'
+			else
+				options="$options $opt "
+				last='opt'
+			fi
+			continue
+		fi
+		# get arguments
+		if [[ $opt != -* ]]
+		then
+			last='arg'
+			if [[ ! $wcpath ]]
+			then
+				wcpath=$opt
+			elif [[ ! $trailurl ]]
+			then
+				trailurl=$opt
+			fi
+		fi
+	done
+	[[ $stat ]] || stat=$last
+
+	# argument part
+	if [[ $cur != -* || $stat = 'arg' ]]
+	then
+		[[ $wcpath && $trailurl ]] && COMPREPLY=( '' )
+		return 0
+	fi
+
+	# suggest options, and  take out already given options
+	for opt in $options
+	do
+		# take out options
+		cmdOpts=${cmdOpts/ $opt / }
+
+		# take out alternatives
+		case $opt in
+			-n)              cmdOpts=${cmdOpts/ --no-newline / } ;;
+			--no-newline)    cmdOpts=${cmdOpts/ -n / } ;;
+			-h)              cmdOpts=${cmdOpts/ --help / } ;;
+			--help)          cmdOpts=${cmdOpts/ -h / } ;;
+			-c)              cmdOpts=${cmdOpts/ --committed / } ;;
+			--committed)     cmdOpts=${cmdOpts/ -c / } ;;
+		esac
+	done
+
+	COMPREPLY=( $( compgen -W "$cmdOpts" -- $cur ) )
+
+	return 0
+}
+# -X option does not seem to work?
+complete -F _svnversion -o dirnames -X '*.svn*' svnversion

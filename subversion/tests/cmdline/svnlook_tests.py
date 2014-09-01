@@ -3,29 +3,44 @@
 #  svnlook_tests.py:  testing the 'svnlook' tool.
 #
 #  Subversion is a tool for revision control.
-#  See http://subversion.tigris.org for more information.
+#  See http://subversion.apache.org for more information.
 #
 # ====================================================================
-# Copyright (c) 2000-2004, 2007-2009 CollabNet.  All rights reserved.
+#    Licensed to the Apache Software Foundation (ASF) under one
+#    or more contributor license agreements.  See the NOTICE file
+#    distributed with this work for additional information
+#    regarding copyright ownership.  The ASF licenses this file
+#    to you under the Apache License, Version 2.0 (the
+#    "License"); you may not use this file except in compliance
+#    with the License.  You may obtain a copy of the License at
 #
-# This software is licensed as described in the file COPYING, which
-# you should have received as part of this distribution.  The terms
-# are also available at http://subversion.tigris.org/license-1.html.
-# If newer versions of this license are posted there, you may use a
-# newer version instead, at your option.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
+#    Unless required by applicable law or agreed to in writing,
+#    software distributed under the License is distributed on an
+#    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#    KIND, either express or implied.  See the License for the
+#    specific language governing permissions and limitations
+#    under the License.
 ######################################################################
 
 # General modules
-import re, os
+import re, os, logging
+
+logger = logging.getLogger()
 
 # Our testing module
 import svntest
 
+from prop_tests import binary_mime_type_on_text_file_warning
 
 # (abbreviation)
-Skip = svntest.testcase.Skip
-XFail = svntest.testcase.XFail
+Skip = svntest.testcase.Skip_deco
+SkipUnless = svntest.testcase.SkipUnless_deco
+XFail = svntest.testcase.XFail_deco
+Issues = svntest.testcase.Issues_deco
+Issue = svntest.testcase.Issue_deco
+Wimp = svntest.testcase.Wimp_deco
 Item = svntest.wc.StateItem
 
 
@@ -34,19 +49,21 @@ Item = svntest.wc.StateItem
 # Convenience functions to make writing more tests easier
 
 def run_svnlook(*varargs):
-  """Run svnlook with VARARGS, returns stdout as list of lines.
-  Raises Failure if any stderr messages."""
+  """Run svnlook with VARARGS, returns exit code as int; stdout, stderr as
+  list of lines (including line terminators).
+  Raises Failure if any stderr messages.
+  """
   exit_code, output, dummy_errput = svntest.main.run_command(
-    svntest.main.svnlook_binary, 0, 0, *varargs)
+    svntest.main.svnlook_binary, 0, False, *varargs)
 
   return output
 
 
 def expect(tag, expected, got):
   if expected != got:
-    print("When testing: %s" % tag)
-    print("Expected: %s" % expected)
-    print("     Got: %s" % got)
+    logger.warn("When testing: %s", tag)
+    logger.warn("Expected: %s", expected)
+    logger.warn("     Got: %s", got)
     raise svntest.Failure
 
 
@@ -84,7 +101,7 @@ def test_misc(sbox):
 
   # give the repo a new UUID
   uuid = "01234567-89ab-cdef-89ab-cdef01234567"
-  svntest.main.run_command_stdin(svntest.main.svnadmin_binary, None, 1,
+  svntest.main.run_command_stdin(svntest.main.svnadmin_binary, None, 0, True,
                            ["SVN-fs-dump-format-version: 2\n",
                             "\n",
                             "UUID: ", uuid, "\n",
@@ -105,35 +122,39 @@ def test_misc(sbox):
   # the 'svnlook tree --full-paths' output if demanding the whole repository
   treelist = run_svnlook('tree', repo_dir)
   treelistfull = run_svnlook('tree', '--full-paths', repo_dir)
+
   path = ''
-  n = 0
+  treelistexpand = []
   for entry in treelist:
     len1 = len(entry)
     len2 = len(entry.lstrip())
-    path = path[0:2*(len1-len2)-1] + entry.strip()
-    test = treelistfull[n].rstrip()
-    if n != 0:
-      test = "/" + test
-    if not path == test:
-      print("Unexpected result from tree with --full-paths:")
-      print("  entry            : %s" % entry.rstrip())
-      print("  with --full-paths: %s" % treelistfull[n].rstrip())
-      raise svntest.Failure
-    n = n + 1
+    path = path[0:2*(len1-len2)-1] + entry.strip() + '\n'
+    if path == '/\n':
+      treelistexpand.append(path)
+    else:
+      treelistexpand.append(path[1:])
+
+  treelistexpand = svntest.verify.UnorderedOutput(treelistexpand)
+  svntest.verify.compare_and_display_lines('Unexpected result from tree', '',
+                                           treelistexpand, treelistfull)
 
   # check if the 'svnlook tree' output is the ending of
   # the 'svnlook tree --full-paths' output if demanding
   # any part of the repository
-  n = 0
   treelist = run_svnlook('tree', repo_dir, '/A/B')
   treelistfull = run_svnlook('tree', '--full-paths', repo_dir, '/A/B')
+
+  path = ''
+  treelistexpand = []
   for entry in treelist:
-    if not treelistfull[n].endswith(entry.lstrip()):
-      print("Unexpected result from tree with --full-paths:")
-      print("  entry            : %s" % entry.rstrip())
-      print("  with --full-paths: %s" % treelistfull[n].rstrip())
-      raise svntest.Failure
-    n = n + 1
+    len1 = len(entry)
+    len2 = len(entry.lstrip())
+    path = path[0:2*(len1-len2)] + entry.strip() + '\n'
+    treelistexpand.append('/A/' + path)
+
+  treelistexpand = svntest.verify.UnorderedOutput(treelistexpand)
+  svntest.verify.compare_and_display_lines('Unexpected result from tree', '',
+                                           treelistexpand, treelistfull)
 
   treelist = run_svnlook('tree', repo_dir, '/')
   if treelist[0] != '/\n':
@@ -149,7 +170,7 @@ def test_misc(sbox):
   # We cannot rely on svn:author's presence. ra_svn doesn't set it.
   if not (proplist == [ 'svn:author', 'svn:date', 'svn:log' ]
       or proplist == [ 'svn:date', 'svn:log' ]):
-    print("Unexpected result from proplist: %s" % proplist)
+    logger.warn("Unexpected result from proplist: %s", proplist)
     raise svntest.Failure
 
   prop_name = 'foo:bar-baz-quux'
@@ -177,6 +198,7 @@ def test_misc(sbox):
 
 #----------------------------------------------------------------------
 # Issue 1089
+@Issue(1089)
 def delete_file_in_moved_dir(sbox):
   "delete file in moved dir"
 
@@ -203,6 +225,13 @@ def delete_file_in_moved_dir(sbox):
     'A/B/E2'      : Item(status='  ', wc_rev=2),
     'A/B/E2/beta' : Item(status='  ', wc_rev=2),
     })
+  ### this commit fails. the 'alpha' node is marked 'not-present' since it
+  ### is a deleted child of a move/copy. this is all well and proper.
+  ### however, during the commit, the parent node is committed down to just
+  ### the BASE node. at that point, 'alpha' has no parent in WORKING which
+  ### is a schema violation. there is a plan for committing in this kind of
+  ### situation, layed out in wc-ng-design. that needs to be implemented
+  ### in order to get this commit working again.
   svntest.actions.run_and_verify_commit(wc_dir,
                                         expected_output,
                                         expected_status,
@@ -224,6 +253,7 @@ def delete_file_in_moved_dir(sbox):
 
 #----------------------------------------------------------------------
 # Issue 1241
+@Issue(1241)
 def test_print_property_diffs(sbox):
   "test the printing of property diffs"
 
@@ -252,11 +282,22 @@ def test_print_property_diffs(sbox):
   if len(output) != len(expected_output):
     raise svntest.Failure
 
+  canonical_iota_path = iota_path.replace(os.path.sep, '/')
+
   # replace wcdir/iota with iota in expected_output
   for i in range(len(expected_output)):
-    expected_output[i] = expected_output[i].replace(iota_path, 'iota')
+    expected_output[i] = expected_output[i].replace(canonical_iota_path,
+                                                    'iota')
 
-  svntest.verify.compare_and_display_lines('', '', expected_output, output)
+  # Check that the header filenames match.
+  if expected_output[2].split()[1] != output[2].split()[1]:
+    raise svntest.Failure
+  if expected_output[3].split()[1] != output[3].split()[1]:
+    raise svntest.Failure
+
+  svntest.verify.compare_and_display_lines('', '',
+                                           expected_output[4:],
+                                           output[4:])
 
 #----------------------------------------------------------------------
 # Check that svnlook info repairs allows inconsistent line endings in logs.
@@ -311,7 +352,8 @@ text
 """
 
   # load dumpfile with inconsistent newlines into repos.
-  svntest.actions.load_repo(sbox, dump_str=dump_str)
+  svntest.actions.load_repo(sbox, dump_str=dump_str,
+                            bypass_prop_validation=True)
 
   exit_code, output, errput = svntest.main.run_svnlook("info",
                                                        sbox.repo_dir, "-r1")
@@ -363,6 +405,7 @@ def changed_copy_info(sbox):
 
 #----------------------------------------------------------------------
 # Issue 2663
+@Issue(2663)
 def tree_non_recursive(sbox):
   "test 'svnlook tree --non-recursive'"
 
@@ -377,12 +420,12 @@ def tree_non_recursive(sbox):
   treelist = run_svnlook('tree', '--non-recursive', repo_dir)
   for entry in treelist:
     if not entry.rstrip() in expected_results_root:
-      print("Unexpected result from tree with --non-recursive:")
-      print("  entry            : %s" % entry.rstrip())
+      logger.warn("Unexpected result from tree with --non-recursive:")
+      logger.warn("  entry            : %s", entry.rstrip())
       raise svntest.Failure
   if len(treelist) != len(expected_results_root):
-    print("Expected %i output entries, found %i"
-          % (len(expected_results_root), len(treelist)))
+    logger.warn("Expected %i output entries, found %i",
+          len(expected_results_root), len(treelist))
     raise svntest.Failure
 
   # check the output of svnlook --non-recursive on a
@@ -390,12 +433,12 @@ def tree_non_recursive(sbox):
   treelist = run_svnlook('tree', '--non-recursive', repo_dir, '/A/B')
   for entry in treelist:
     if not entry.rstrip() in expected_results_deep:
-      print("Unexpected result from tree with --non-recursive:")
-      print("  entry            : %s" % entry.rstrip())
+      logger.warn("Unexpected result from tree with --non-recursive:")
+      logger.warn("  entry            : %s", entry.rstrip())
       raise svntest.Failure
   if len(treelist) != len(expected_results_deep):
-    print("Expected %i output entries, found %i"
-          % (len(expected_results_deep), len(treelist)))
+    logger.warn("Expected %i output entries, found %i",
+          len(expected_results_deep), len(treelist))
     raise svntest.Failure
 
 #----------------------------------------------------------------------
@@ -445,14 +488,14 @@ def diff_ignore_whitespace(sbox):
   # Check the output of 'svnlook diff -x --ignore-space-change' on mu.
   # It should not print anything.
   output = run_svnlook('diff', '-r2', '-x', '--ignore-space-change',
-                       repo_dir, '/A/mu')
+                       repo_dir)
   if output != []:
     raise svntest.Failure
 
   # Check the output of 'svnlook diff -x --ignore-all-space' on mu.
   # It should not print anything.
   output = run_svnlook('diff', '-r2', '-x', '--ignore-all-space',
-                       repo_dir, '/A/mu')
+                       repo_dir)
   if output != []:
     raise svntest.Failure
 
@@ -464,6 +507,8 @@ def diff_ignore_eolstyle(sbox):
   repo_dir = sbox.repo_dir
   wc_dir = sbox.wc_dir
 
+  # CRLF is a string that will match a CRLF sequence read from a text file.
+  # ### On Windows, we assume CRLF will be read as LF, so it's a poor test.
   if os.name == 'nt':
     crlf = '\n'
   else:
@@ -502,14 +547,25 @@ def diff_ignore_eolstyle(sbox):
 
 
     output = run_svnlook('diff', '-r', str(rev + 1), '-x',
-                         '--ignore-eol-style', repo_dir, '/A/mu')
+                         '--ignore-eol-style', repo_dir)
     rev += 1
+
+    canonical_mu_path = mu_path.replace(os.path.sep, '/')
 
     # replace wcdir/A/mu with A/mu in expected_output
     for i in range(len(expected_output)):
-      expected_output[i] = expected_output[i].replace(mu_path, 'A/mu')
+      expected_output[i] = expected_output[i].replace(canonical_mu_path,
+                                                      'A/mu')
 
-    svntest.verify.compare_and_display_lines('', '', expected_output, output)
+    # Check that the header filenames match.
+    if expected_output[2].split()[1] != output[2].split()[1]:
+      raise svntest.Failure
+    if expected_output[3].split()[1] != output[3].split()[1]:
+      raise svntest.Failure
+
+    svntest.verify.compare_and_display_lines('', '',
+                                             expected_output[4:],
+                                             output[4:])
 
 
 #----------------------------------------------------------------------
@@ -523,15 +579,45 @@ def diff_binary(sbox):
   # Set A/mu to a binary mime-type, tweak its text, and commit.
   mu_path = os.path.join(wc_dir, 'A', 'mu')
   svntest.main.file_append(mu_path, 'new appended text for mu')
-  svntest.main.run_svn(None, 'propset', 'svn:mime-type',
+  svntest.main.run_svn(binary_mime_type_on_text_file_warning,
+                       'propset', 'svn:mime-type',
                        'application/octet-stream', mu_path)
   svntest.main.run_svn(None, 'ci', '-m', 'log msg', mu_path)
 
   # Now run 'svnlook diff' and look for the "Binary files differ" message.
-  output = run_svnlook('diff', repo_dir, '/A/mu')
+  output = run_svnlook('diff', repo_dir)
   if not "(Binary files differ)\n" in output:
     raise svntest.Failure("No 'Binary files differ' indication in "
                           "'svnlook diff' output.")
+
+#----------------------------------------------------------------------
+def test_filesize(sbox):
+  "test 'svnlook filesize'"
+
+  sbox.build()
+  repo_dir = sbox.repo_dir
+  wc_dir = sbox.wc_dir
+
+  tree_output = run_svnlook('tree', '--full-paths', repo_dir)
+  for line in tree_output:
+    # Drop line endings
+    line = line.rstrip()
+    # Skip directories
+    if line[-1] == '/':
+      continue
+    # Run 'svnlook cat' and measure the size of the output.
+    cat_output = run_svnlook('cat', repo_dir, line)
+    cat_size = len("".join(cat_output))
+    # Run 'svnlook filesize' and compare the results with the CAT_SIZE.
+    filesize_output = run_svnlook('filesize', repo_dir, line)
+    if len(filesize_output) != 1:
+      raise svntest.Failure("'svnlook filesize' printed something other than "
+                            "a single line of output.")
+    filesize = int(filesize_output[0].strip())
+    if filesize != cat_size:
+      raise svntest.Failure("'svnlook filesize' and the counted length of "
+                            "'svnlook cat's output differ for the path "
+                            "'%s'." % (line))
 
 #----------------------------------------------------------------------
 def verify_logfile(logfilename, expected_data):
@@ -563,7 +649,7 @@ svnlook_bin=%s
 fp = open(os.path.join(sys.argv[1], 'hooks.log'), 'wb')
 def output_command(fp, cmd, opt):
   command = [svnlook_bin, cmd, '-t', sys.argv[2], sys.argv[1]] + opt
-  process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+  process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, bufsize=-1)
   (output, errors) = process.communicate()
   status = process.returncode
   fp.write(output)
@@ -571,7 +657,7 @@ def output_command(fp, cmd, opt):
   return status
 
 for (svnlook_cmd, svnlook_opt) in %s:
-  output_command(fp, svnlook_cmd, svnlook_opt.split(' '))
+  output_command(fp, svnlook_cmd, svnlook_opt.split())
 fp.close()"""
   pre_commit_hook = svntest.main.get_pre_commit_hook_path(repo_dir)
 
@@ -616,12 +702,35 @@ fp.close()"""
   # Now check the logfile
   expected_data = [ 'bogus_val\n',
                     'bogus_rev_val\n',
+                    "Properties on '/A':\n",
                     '  bogus_prop\n',
                     '  svn:log\n', '  svn:author\n',
-                    #  internal property, not really expected
-                    '  svn:check-locks\n',
-                    '  bogus_rev_prop\n', '  svn:date\n']
-  verify_logfile(logfilepath, expected_data)
+                    '  svn:check-locks\n', # internal prop, not really expected
+                    '  bogus_rev_prop\n',
+                    '  svn:date\n',
+                    '  svn:txn-client-compat-version\n',
+                    ]
+  # ra_dav and ra_svn add the user-agent ephemeral property
+  if svntest.main.is_ra_type_dav() or svntest.main.is_ra_type_svn():
+    expected_data.append('  svn:txn-user-agent\n')
+  verify_logfile(logfilepath, svntest.verify.UnorderedOutput(expected_data))
+
+def property_delete(sbox):
+  "property delete"
+
+  sbox.build()
+  repo_dir = sbox.repo_dir
+
+  sbox.simple_propset('foo', 'bar', 'A/mu')
+  sbox.simple_commit()
+  sbox.simple_propdel('foo', 'A/mu')
+  sbox.simple_commit()
+
+  # XFail since r1293375, changed and diff produce no output on a
+  # property delete
+  svntest.actions.run_and_verify_svnlook(None, ["_U  A/mu\n"], [],
+                                         'changed', repo_dir)
+
 
 ########################################################################
 # Run the tests
@@ -639,7 +748,9 @@ test_list = [ None,
               diff_ignore_whitespace,
               diff_ignore_eolstyle,
               diff_binary,
+              test_filesize,
               test_txn_flag,
+              property_delete,
              ]
 
 if __name__ == '__main__':

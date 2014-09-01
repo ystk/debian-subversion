@@ -3,23 +3,29 @@
  * SVN_AUTH_CRED_SSL_CLIENT_CERT_PW
  *
  * ====================================================================
- * Copyright (c) 2000-2004, 2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
 
 #include <apr_pools.h>
 
+#include "svn_hash.h"
 #include "svn_auth.h"
 #include "svn_error.h"
 #include "svn_config.h"
@@ -44,7 +50,7 @@
 #define AUTHN_PASSTYPE_KEY              "passtype"
 
 /* Baton type for the ssl client cert passphrase provider. */
-typedef struct
+typedef struct ssl_client_cert_pw_file_provider_baton_t
 {
   svn_auth_plaintext_passphrase_prompt_func_t plaintext_passphrase_prompt_func;
   void *prompt_baton;
@@ -58,8 +64,9 @@ typedef struct
 /* This implements the svn_auth__password_get_t interface.
    Set **PASSPHRASE to the plaintext passphrase retrieved from CREDS;
    ignore other parameters. */
-svn_boolean_t
-svn_auth__ssl_client_cert_pw_get(const char **passphrase,
+svn_error_t *
+svn_auth__ssl_client_cert_pw_get(svn_boolean_t *done,
+                                 const char **passphrase,
                                  apr_hash_t *creds,
                                  const char *realmstring,
                                  const char *username,
@@ -68,19 +75,22 @@ svn_auth__ssl_client_cert_pw_get(const char **passphrase,
                                  apr_pool_t *pool)
 {
   svn_string_t *str;
-  str = apr_hash_get(creds, AUTHN_PASSPHRASE_KEY, APR_HASH_KEY_STRING);
+  str = svn_hash_gets(creds, AUTHN_PASSPHRASE_KEY);
   if (str && str->data)
     {
       *passphrase = str->data;
-      return TRUE;
+      *done = TRUE;
+      return SVN_NO_ERROR;
     }
-  return FALSE;
+  *done = FALSE;
+  return SVN_NO_ERROR;
 }
 
 /* This implements the svn_auth__password_set_t interface.
    Store PASSPHRASE in CREDS; ignore other parameters. */
-svn_boolean_t
-svn_auth__ssl_client_cert_pw_set(apr_hash_t *creds,
+svn_error_t *
+svn_auth__ssl_client_cert_pw_set(svn_boolean_t *done,
+                                 apr_hash_t *creds,
                                  const char *realmstring,
                                  const char *username,
                                  const char *passphrase,
@@ -88,31 +98,29 @@ svn_auth__ssl_client_cert_pw_set(apr_hash_t *creds,
                                  svn_boolean_t non_interactive,
                                  apr_pool_t *pool)
 {
-  apr_hash_set(creds, AUTHN_PASSPHRASE_KEY, APR_HASH_KEY_STRING,
-               svn_string_create(passphrase, pool));
-  return TRUE;
+  svn_hash_sets(creds, AUTHN_PASSPHRASE_KEY,
+                svn_string_create(passphrase, pool));
+  *done = TRUE;
+  return SVN_NO_ERROR;
 }
 
 svn_error_t *
-svn_auth__ssl_client_cert_pw_file_first_creds_helper
-  (void **credentials_p,
-   void **iter_baton,
-   void *provider_baton,
-   apr_hash_t *parameters,
-   const char *realmstring,
-   svn_auth__password_get_t passphrase_get,
-   const char *passtype,
-   apr_pool_t *pool)
+svn_auth__ssl_client_cert_pw_cache_get(void **credentials_p,
+                                       void **iter_baton,
+                                       void *provider_baton,
+                                       apr_hash_t *parameters,
+                                       const char *realmstring,
+                                       svn_auth__password_get_t passphrase_get,
+                                       const char *passtype,
+                                       apr_pool_t *pool)
 {
-  svn_config_t *cfg = apr_hash_get(parameters,
-                                   SVN_AUTH_PARAM_CONFIG_CATEGORY_SERVERS,
-                                   APR_HASH_KEY_STRING);
-  const char *server_group = apr_hash_get(parameters,
-                                          SVN_AUTH_PARAM_SERVER_GROUP,
-                                          APR_HASH_KEY_STRING);
-  svn_boolean_t non_interactive = apr_hash_get(parameters,
-                                               SVN_AUTH_PARAM_NON_INTERACTIVE,
-                                               APR_HASH_KEY_STRING) != NULL;
+  svn_config_t *cfg = svn_hash_gets(parameters,
+                                    SVN_AUTH_PARAM_CONFIG_CATEGORY_SERVERS);
+  const char *server_group = svn_hash_gets(parameters,
+                                           SVN_AUTH_PARAM_SERVER_GROUP);
+  svn_boolean_t non_interactive = svn_hash_gets(parameters,
+                                                SVN_AUTH_PARAM_NON_INTERACTIVE)
+      != NULL;
   const char *password =
     svn_config_get_server_setting(cfg, server_group,
                                   SVN_CONFIG_OPTION_SSL_CLIENT_CERT_PASSWORD,
@@ -121,9 +129,8 @@ svn_auth__ssl_client_cert_pw_file_first_creds_helper
     {
       svn_error_t *err;
       apr_hash_t *creds_hash = NULL;
-      const char *config_dir = apr_hash_get(parameters,
-                                            SVN_AUTH_PARAM_CONFIG_DIR,
-                                            APR_HASH_KEY_STRING);
+      const char *config_dir = svn_hash_gets(parameters,
+                                             SVN_AUTH_PARAM_CONFIG_DIR);
 
       /* Try to load passphrase from the auth/ cache. */
       err = svn_config_read_auth_data(&creds_hash,
@@ -132,8 +139,11 @@ svn_auth__ssl_client_cert_pw_file_first_creds_helper
       svn_error_clear(err);
       if (! err && creds_hash)
         {
-          if (!passphrase_get(&password, creds_hash, realmstring,
-                              NULL, parameters, non_interactive, pool))
+          svn_boolean_t done;
+
+          SVN_ERR(passphrase_get(&done, &password, creds_hash, realmstring,
+                                 NULL, parameters, non_interactive, pool));
+          if (!done)
             password = NULL;
         }
     }
@@ -153,47 +163,34 @@ svn_auth__ssl_client_cert_pw_file_first_creds_helper
 
 
 svn_error_t *
-svn_auth__ssl_client_cert_pw_file_save_creds_helper
-  (svn_boolean_t *saved,
-   void *credentials,
-   void *provider_baton,
-   apr_hash_t *parameters,
-   const char *realmstring,
-   svn_auth__password_set_t passphrase_set,
-   const char *passtype,
-   apr_pool_t *pool)
+svn_auth__ssl_client_cert_pw_cache_set(svn_boolean_t *saved,
+                                       void *credentials,
+                                       void *provider_baton,
+                                       apr_hash_t *parameters,
+                                       const char *realmstring,
+                                       svn_auth__password_set_t passphrase_set,
+                                       const char *passtype,
+                                       apr_pool_t *pool)
 {
   svn_auth_cred_ssl_client_cert_pw_t *creds = credentials;
   apr_hash_t *creds_hash = NULL;
   const char *config_dir;
   svn_error_t *err;
   svn_boolean_t dont_store_passphrase =
-    apr_hash_get(parameters,
-                 SVN_AUTH_PARAM_DONT_STORE_SSL_CLIENT_CERT_PP,
-                 APR_HASH_KEY_STRING) != NULL;
-  const char *store_ssl_client_cert_pp_plaintext =
-    apr_hash_get(parameters,
-                 SVN_AUTH_PARAM_STORE_SSL_CLIENT_CERT_PP_PLAINTEXT,
-                 APR_HASH_KEY_STRING);
-  svn_boolean_t non_interactive = apr_hash_get(parameters,
-                                               SVN_AUTH_PARAM_NON_INTERACTIVE,
-                                               APR_HASH_KEY_STRING) != NULL;
-  ssl_client_cert_pw_file_provider_baton_t *b =
-    (ssl_client_cert_pw_file_provider_baton_t *)provider_baton;
-
+    svn_hash_gets(parameters, SVN_AUTH_PARAM_DONT_STORE_SSL_CLIENT_CERT_PP)
+    != NULL;
+  svn_boolean_t non_interactive =
+      svn_hash_gets(parameters, SVN_AUTH_PARAM_NON_INTERACTIVE) != NULL;
   svn_boolean_t no_auth_cache =
-    (! creds->may_save) || (apr_hash_get(parameters,
-                                         SVN_AUTH_PARAM_NO_AUTH_CACHE,
-                                         APR_HASH_KEY_STRING) != NULL);
+    (! creds->may_save)
+    || (svn_hash_gets(parameters, SVN_AUTH_PARAM_NO_AUTH_CACHE) != NULL);
 
   *saved = FALSE;
 
   if (no_auth_cache)
     return SVN_NO_ERROR;
 
-  config_dir = apr_hash_get(parameters,
-                            SVN_AUTH_PARAM_CONFIG_DIR,
-                            APR_HASH_KEY_STRING);
+  config_dir = svn_hash_gets(parameters, SVN_AUTH_PARAM_CONFIG_DIR);
   creds_hash = apr_hash_make(pool);
 
   /* Don't store passphrase in any form if the user has told
@@ -214,6 +211,15 @@ svn_auth__ssl_client_cert_pw_file_save_creds_helper
         }
       else
         {
+#ifdef SVN_DISABLE_PLAINTEXT_PASSWORD_STORAGE
+          may_save_passphrase = FALSE;
+#else
+          const char *store_ssl_client_cert_pp_plaintext =
+            svn_hash_gets(parameters,
+                          SVN_AUTH_PARAM_STORE_SSL_CLIENT_CERT_PP_PLAINTEXT);
+          ssl_client_cert_pw_file_provider_baton_t *b =
+            (ssl_client_cert_pw_file_provider_baton_t *)provider_baton;
+
           if (svn_cstring_casecmp(store_ssl_client_cert_pp_plaintext,
                                   SVN_CONFIG_ASK) == 0)
             {
@@ -234,8 +240,7 @@ svn_auth__ssl_client_cert_pw_file_save_creds_helper
                      "cached answer is no" and "no answer has been
                      cached yet". */
                   svn_boolean_t *cached_answer =
-                    apr_hash_get(b->plaintext_answers, realmstring,
-                                 APR_HASH_KEY_STRING);
+                    svn_hash_gets(b->plaintext_answers, realmstring);
 
                   if (cached_answer != NULL)
                     {
@@ -246,8 +251,8 @@ svn_auth__ssl_client_cert_pw_file_save_creds_helper
                       apr_pool_t *cached_answer_pool;
 
                       /* Nothing cached for this realm, prompt the user. */
-                      SVN_ERR((*b->plaintext_passphrase_prompt_func)
-                               (&may_save_passphrase,
+                      SVN_ERR((*b->plaintext_passphrase_prompt_func)(
+                                &may_save_passphrase,
                                 realmstring,
                                 b->prompt_baton,
                                 pool));
@@ -265,8 +270,8 @@ svn_auth__ssl_client_cert_pw_file_save_creds_helper
                       cached_answer = apr_palloc(cached_answer_pool,
                                                  sizeof(*cached_answer));
                       *cached_answer = may_save_passphrase;
-                      apr_hash_set(b->plaintext_answers, realmstring,
-                                   APR_HASH_KEY_STRING, cached_answer);
+                      svn_hash_sets(b->plaintext_answers, realmstring,
+                                    cached_answer);
                     }
                 }
               else
@@ -292,19 +297,19 @@ svn_auth__ssl_client_cert_pw_file_save_creds_helper
                 store_ssl_client_cert_pp_plaintext,
                 SVN_AUTH_PARAM_STORE_SSL_CLIENT_CERT_PP_PLAINTEXT);
             }
+#endif
         }
 
       if (may_save_passphrase)
         {
-          *saved = passphrase_set(creds_hash, realmstring,
-                                  NULL, creds->password, parameters,
-                                  non_interactive, pool);
+          SVN_ERR(passphrase_set(saved, creds_hash, realmstring,
+                                 NULL, creds->password, parameters,
+                                 non_interactive, pool));
 
           if (*saved && passtype)
             {
-              apr_hash_set(creds_hash, AUTHN_PASSTYPE_KEY,
-                           APR_HASH_KEY_STRING,
-                           svn_string_create(passtype, pool));
+              svn_hash_sets(creds_hash, AUTHN_PASSTYPE_KEY,
+                            svn_string_create(passtype, pool));
             }
 
           /* Save credentials to disk. */
@@ -331,15 +336,12 @@ ssl_client_cert_pw_file_first_credentials(void **credentials_p,
                                           const char *realmstring,
                                           apr_pool_t *pool)
 {
-  return svn_auth__ssl_client_cert_pw_file_first_creds_helper
-           (credentials_p,
-            iter_baton,
-            provider_baton,
-            parameters,
-            realmstring,
-            svn_auth__ssl_client_cert_pw_get,
-            SVN_AUTH__SIMPLE_PASSWORD_TYPE,
-            pool);
+  return svn_auth__ssl_client_cert_pw_cache_get(credentials_p, iter_baton,
+                                                provider_baton, parameters,
+                                                realmstring,
+                                                svn_auth__ssl_client_cert_pw_get,
+                                                SVN_AUTH__SIMPLE_PASSWORD_TYPE,
+                                                pool);
 }
 
 
@@ -353,14 +355,13 @@ ssl_client_cert_pw_file_save_credentials(svn_boolean_t *saved,
                                          const char *realmstring,
                                          apr_pool_t *pool)
 {
-  return svn_auth__ssl_client_cert_pw_file_save_creds_helper
-           (saved, credentials,
-            provider_baton,
-            parameters,
-            realmstring,
-            svn_auth__ssl_client_cert_pw_set,
-            SVN_AUTH__SIMPLE_PASSWORD_TYPE,
-            pool);
+  return svn_auth__ssl_client_cert_pw_cache_set(saved, credentials,
+                                                provider_baton,
+                                                parameters,
+                                                realmstring,
+                                                svn_auth__ssl_client_cert_pw_set,
+                                                SVN_AUTH__SIMPLE_PASSWORD_TYPE,
+                                                pool);
 }
 
 
@@ -400,7 +401,7 @@ svn_auth_get_ssl_client_cert_pw_file_provider2
 
 /* Baton type for client passphrase prompting.
    There is no iteration baton type. */
-typedef struct
+typedef struct ssl_client_cert_pw_prompt_provider_baton_t
 {
   svn_auth_ssl_client_cert_pw_prompt_func_t prompt_func;
   void *prompt_baton;
@@ -410,7 +411,7 @@ typedef struct
 } ssl_client_cert_pw_prompt_provider_baton_t;
 
 /* Iteration baton. */
-typedef struct
+typedef struct ssl_client_cert_pw_prompt_iter_baton_t
 {
   /* The original provider baton */
   ssl_client_cert_pw_prompt_provider_baton_t *pb;
@@ -434,9 +435,8 @@ ssl_client_cert_pw_prompt_first_cred(void **credentials_p,
   ssl_client_cert_pw_prompt_provider_baton_t *pb = provider_baton;
   ssl_client_cert_pw_prompt_iter_baton_t *ib =
     apr_pcalloc(pool, sizeof(*ib));
-  const char *no_auth_cache = apr_hash_get(parameters,
-                                           SVN_AUTH_PARAM_NO_AUTH_CACHE,
-                                           APR_HASH_KEY_STRING);
+  const char *no_auth_cache = svn_hash_gets(parameters,
+                                            SVN_AUTH_PARAM_NO_AUTH_CACHE);
 
   SVN_ERR(pb->prompt_func((svn_auth_cred_ssl_client_cert_pw_t **)
                           credentials_p, pb->prompt_baton, realmstring,
@@ -460,9 +460,8 @@ ssl_client_cert_pw_prompt_next_cred(void **credentials_p,
                                     apr_pool_t *pool)
 {
   ssl_client_cert_pw_prompt_iter_baton_t *ib = iter_baton;
-  const char *no_auth_cache = apr_hash_get(parameters,
-                                           SVN_AUTH_PARAM_NO_AUTH_CACHE,
-                                           APR_HASH_KEY_STRING);
+  const char *no_auth_cache = svn_hash_gets(parameters,
+                                            SVN_AUTH_PARAM_NO_AUTH_CACHE);
 
   if ((ib->pb->retry_limit >= 0) && (ib->retries >= ib->pb->retry_limit))
     {

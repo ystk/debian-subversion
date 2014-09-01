@@ -1,17 +1,22 @@
 /* checksum-reps-table.c : operations on the `checksum-reps' table
  *
  * ====================================================================
- * Copyright (c) 2007-2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -134,7 +139,7 @@ svn_error_t *svn_fs_bdb__set_checksum_rep(svn_fs_t *fs,
   /* Create a value from our REP_KEY, and add this record to the table. */
   svn_fs_base__str_to_dbt(&value, rep_key);
   svn_fs_base__trail_debug(trail, "checksum-reps", "put");
-  SVN_ERR(BDB_WRAP(fs, _("storing checksum-reps record"),
+  SVN_ERR(BDB_WRAP(fs, N_("storing checksum-reps record"),
                    bfd->checksum_reps->put(bfd->checksum_reps, trail->db_txn,
                                            &key, &value, 0)));
   return SVN_NO_ERROR;
@@ -156,7 +161,7 @@ svn_error_t *svn_fs_bdb__delete_checksum_rep(svn_fs_t *fs,
 
   svn_fs_base__checksum_to_dbt(&key, checksum);
   svn_fs_base__trail_debug(trail, "checksum-reps", "del");
-  SVN_ERR(BDB_WRAP(fs, "deleting entry from 'checksum-reps' table",
+  SVN_ERR(BDB_WRAP(fs, N_("deleting entry from 'checksum-reps' table"),
                    bfd->checksum_reps->del(bfd->checksum_reps,
                                            trail->db_txn, &key, 0)));
   return SVN_NO_ERROR;
@@ -178,7 +183,7 @@ svn_error_t *svn_fs_bdb__reserve_rep_reuse_id(const char **id_p,
   /* Get the current value associated with the `next-key' key in the
      `checksum-reps' table.  */
   svn_fs_base__trail_debug(trail, "checksum-reps", "get");
-  SVN_ERR(BDB_WRAP(fs, _("allocating new representation reuse ID "
+  SVN_ERR(BDB_WRAP(fs, N_("allocating new representation reuse ID "
                          "(getting 'next-key')"),
                    bfd->checksum_reps->get(bfd->checksum_reps, trail->db_txn,
                                            &query,
@@ -199,5 +204,5 @@ svn_error_t *svn_fs_bdb__reserve_rep_reuse_id(const char **id_p,
                                    svn_fs_base__str_to_dbt(&result, next_key),
                                    0);
 
-  return BDB_WRAP(fs, _("bumping next copy key"), db_err);
+  return BDB_WRAP(fs, N_("bumping next representation reuse ID"), db_err);
 }

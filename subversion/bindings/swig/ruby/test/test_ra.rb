@@ -1,3 +1,22 @@
+# ====================================================================
+#    Licensed to the Apache Software Foundation (ASF) under one
+#    or more contributor license agreements.  See the NOTICE file
+#    distributed with this work for additional information
+#    regarding copyright ownership.  The ASF licenses this file
+#    to you under the Apache License, Version 2.0 (the
+#    "License"); you may not use this file except in compliance
+#    with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing,
+#    software distributed under the License is distributed on an
+#    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#    KIND, either express or implied.  See the License for the
+#    specific language governing permissions and limitations
+#    under the License.
+# ====================================================================
+
 require "util"
 
 require "svn/ra"
@@ -79,7 +98,7 @@ class SvnRaTest < Test::Unit::TestCase
         entries, props = session.dir("", info.revision, Svn::Core::DIRENT_KIND)
         assert_equal(Svn::Core::NODE_FILE, entries[file].kind)
         entries, props = session.dir("", info.revision, 0)
-        assert_equal(Svn::Core::NODE_NONE, entries[file].kind)
+        assert_equal(Svn::Core::NODE_UNKNOWN, entries[file].kind)
 
         make_context(log2) do |ctx|
           File.open(path, "w") {|f| f.print(src * 2)}

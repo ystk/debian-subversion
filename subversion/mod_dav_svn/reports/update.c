@@ -1,18 +1,23 @@
 /*
- * update.c: handle the update-report request and response
+ * update.c: mod_dav_svn REPORT handler for transmitting tree deltas
  *
  * ====================================================================
- * Copyright (c) 2000-2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -24,20 +29,25 @@
 #include <http_log.h>
 #include <mod_dav.h>
 
+#include "svn_hash.h"
 #include "svn_pools.h"
 #include "svn_repos.h"
 #include "svn_fs.h"
 #include "svn_base64.h"
 #include "svn_xml.h"
+#include "svn_dirent_uri.h"
 #include "svn_path.h"
 #include "svn_dav.h"
 #include "svn_props.h"
+
 #include "private/svn_log.h"
+#include "private/svn_fspath.h"
 
 #include "../dav_svn.h"
 
 
-typedef struct {
+/* State baton for the overall update process. */
+typedef struct update_ctx_t {
   const dav_resource *resource;
 
   /* the revision we are updating to. used to generated IDs. */
@@ -72,33 +82,58 @@ typedef struct {
   /* True iff client requested all data inline in the report. */
   svn_boolean_t send_all;
 
+  /* True iff client requested that properties be transmitted
+     inline.  (This is implied when "send_all" is set.)  */
+  svn_boolean_t include_props;
+
   /* SVNDIFF version to send to client.  */
   int svndiff_version;
+
+  /* Compression level of SVNDIFF deltas. */
+  int compression_level;
+
+  /* Did the client submit this REPORT request via the HTTPv2 "me
+     resource" and are we advertising support for as much? */
+  svn_boolean_t enable_v2_response;
+
 } update_ctx_t;
 
+
+/* State baton for a file or directory. */
 typedef struct item_baton_t {
   apr_pool_t *pool;
   update_ctx_t *uc;
-  struct item_baton_t *parent; /* the parent of this item. */
-  const char *name;    /* the single-component name of this item */
-  const char *path;    /* a telescoping extension of uc->anchor */
-  const char *path2;   /* a telescoping extension of uc->dst_path */
-  const char *path3;   /* a telescoping extension of uc->dst_path
-                            without dst_path as prefix. */
 
-  const char *base_checksum;   /* base_checksum (from apply_textdelta) */
-  const char *text_checksum;   /* text_checksum (from close_file) */
+  /* Uplink -- the parent of this item. */
+  struct item_baton_t *parent;
 
-  svn_boolean_t text_changed;        /* Did the file's contents change? */
-  svn_boolean_t added;               /* File added? (Implies text_changed.) */
-  svn_boolean_t copyfrom;            /* File copied? */
-  apr_array_header_t *changed_props; /* array of const char * prop names */
-  apr_array_header_t *removed_props; /* array of const char * prop names */
+  /* Single-component name of this item. */
+  const char *name;
 
-  /* "entry props" */
-  const char *committed_rev;
-  const char *committed_date;
-  const char *last_author;
+  /* Telescoping extension paths ... */
+  const char *path;    /* ... of uc->anchor. */
+  const char *path2;   /* ... of uc->dst_path. */
+  const char *path3;   /* ... uc->dst_path, without dst_path prefix. */
+
+  /* Base_checksum (from apply_textdelta). */
+  const char *base_checksum;
+
+  /* Did the file's contents change? */
+  svn_boolean_t text_changed;
+
+  /* File/dir added? (Implies text_changed for files.) */
+  svn_boolean_t added;
+
+  /* File/dir copied? */
+  svn_boolean_t copyfrom;
+
+  /* Does the client need to fetch additional properties for this
+     item? */
+  svn_boolean_t fetch_props;
+
+  /* Array of const char * names of removed properties.  (Used only
+     for copied files/dirs in skelta mode.)  */
+  apr_array_header_t *removed_props;
 
 } item_baton_t;
 
@@ -119,7 +154,7 @@ add_to_path_map(apr_hash_t *hash, const char *path, const char *linkpath)
   const char *repos_path = linkpath ? linkpath : norm_path;
 
   /* now, geez, put the path in the map already! */
-  apr_hash_set(hash, path, APR_HASH_KEY_STRING, repos_path);
+  svn_hash_sets(hash, path, repos_path);
 }
 
 
@@ -135,7 +170,7 @@ get_from_path_map(apr_hash_t *hash, const char *path, apr_pool_t *pool)
   if (! hash)
     return apr_pstrdup(pool, path);
 
-  if ((repos_path = apr_hash_get(hash, path, APR_HASH_KEY_STRING)))
+  if ((repos_path = svn_hash_gets(hash, path)))
     {
       /* what luck!  this path is a hash key!  if there is a linkpath,
          use that, else return the path itself. */
@@ -154,7 +189,7 @@ get_from_path_map(apr_hash_t *hash, const char *path, apr_pool_t *pool)
           /* we found a mapping ... but of one of PATH's parents.
              soooo, we get to re-append the chunks of PATH that we
              broke off to the REPOS_PATH we found. */
-          return svn_path_join(repos_path, path + my_path->len + 1, pool);
+          return svn_fspath__join(repos_path, path + my_path->len + 1, pool);
         }
     }
   while (! svn_path_is_empty(my_path->data)
@@ -174,23 +209,23 @@ make_child_baton(item_baton_t *parent, const char *path, apr_pool_t *pool)
   baton = apr_pcalloc(pool, sizeof(*baton));
   baton->pool = pool;
   baton->uc = parent->uc;
-  baton->name = svn_path_basename(path, pool);
+  baton->name = svn_relpath_basename(path, pool);
   baton->parent = parent;
 
   /* Telescope the path based on uc->anchor.  */
-  baton->path = svn_path_join(parent->path, baton->name, pool);
+  baton->path = svn_fspath__join(parent->path, baton->name, pool);
 
   /* Telescope the path based on uc->dst_path in the exact same way. */
-  baton->path2 = svn_path_join(parent->path2, baton->name, pool);
+  baton->path2 = svn_fspath__join(parent->path2, baton->name, pool);
 
   /* Telescope the third path:  it's relative, not absolute, to
      dst_path.  Now, we gotta be careful here, because if this
      operation had a target, and we're it, then we have to use the
      basename of our source reflection instead of our own.  */
   if ((*baton->uc->target) && (! parent->parent))
-    baton->path3 = svn_path_join(parent->path3, baton->uc->target, pool);
+    baton->path3 = svn_relpath_join(parent->path3, baton->uc->target, pool);
   else
-    baton->path3 = svn_path_join(parent->path3, baton->name, pool);
+    baton->path3 = svn_relpath_join(parent->path3, baton->name, pool);
 
   return baton;
 }
@@ -218,13 +253,23 @@ send_vsn_url(item_baton_t *baton, apr_pool_t *pool)
   path = get_real_fs_path(baton, pool);
   revision = dav_svn__get_safe_cr(baton->uc->rev_root, path, pool);
 
-  href = dav_svn__build_uri(baton->uc->resource->info->repos,
-                            DAV_SVN__BUILD_URI_VERSION,
-                            revision, path, 0 /* add_href */, pool);
+  if (baton->uc->enable_v2_response)
+    {
+      href = dav_svn__build_uri(baton->uc->resource->info->repos,
+                                DAV_SVN__BUILD_URI_REVROOT,
+                                revision, path, 0 /* add_href */, pool);
+    }
+  else
+    {
+      href = dav_svn__build_uri(baton->uc->resource->info->repos,
+                                DAV_SVN__BUILD_URI_VERSION,
+                                revision, path, 0 /* add_href */, pool);
+    }
 
-  return dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                           "<D:checked-in><D:href>%s</D:href></D:checked-in>"
-                           DEBUG_CR, apr_xml_quote_string(pool, href, 1));
+  return dav_svn__brigade_printf(baton->uc->bb, baton->uc->output,
+                                 "<D:checked-in><D:href>%s</D:href>"
+                                 "</D:checked-in>" DEBUG_CR,
+                                 apr_xml_quote_string(pool, href, 1));
 }
 
 
@@ -238,14 +283,13 @@ absent_helper(svn_boolean_t is_dir,
 
   if (! uc->resource_walk)
     {
-      const char *elt = apr_psprintf(pool,
-                                     "<S:absent-%s name=\"%s\"/>" DEBUG_CR,
-                                     DIR_OR_FILE(is_dir),
-                                     apr_xml_quote_string
-                                       (pool,
-                                        svn_path_basename(path, pool),
-                                        1));
-      SVN_ERR(dav_svn__send_xml(uc->bb, uc->output, "%s", elt));
+      SVN_ERR(dav_svn__brigade_printf
+              (uc->bb, uc->output,
+               "<S:absent-%s name=\"%s\"/>" DEBUG_CR,
+               DIR_OR_FILE(is_dir),
+               apr_xml_quote_string(pool,
+                                    svn_relpath_basename(path, NULL),
+                                    1)));
     }
 
   return SVN_NO_ERROR;
@@ -284,27 +328,20 @@ add_helper(svn_boolean_t is_dir,
 
   if (uc->resource_walk)
     {
-      SVN_ERR(dav_svn__send_xml(child->uc->bb, child->uc->output,
-                                "<S:resource path=\"%s\">" DEBUG_CR,
-                                apr_xml_quote_string(pool, child->path3, 1)));
+      SVN_ERR(dav_svn__brigade_printf(child->uc->bb, child->uc->output,
+                                      "<S:resource path=\"%s\">" DEBUG_CR,
+                                      apr_xml_quote_string(pool, child->path3,
+                                                           1)));
     }
   else
     {
       const char *qname = apr_xml_quote_string(pool, child->name, 1);
       const char *elt;
       const char *real_path = get_real_fs_path(child, pool);
+      const char *bc_url_str = "";
+      const char *sha1_checksum_str = "";
 
-      if (! is_dir)
-        {
-          /* files have checksums */
-          svn_checksum_t *checksum;
-          SVN_ERR(svn_fs_file_checksum(&checksum, svn_checksum_md5,
-                                       uc->rev_root, real_path, TRUE,
-                                       pool));
-
-          child->text_checksum = svn_checksum_to_cstring(checksum, pool);
-        }
-      else
+      if (is_dir)
         {
           /* we send baseline-collection urls when we add a directory */
           svn_revnum_t revision;
@@ -314,62 +351,70 @@ add_helper(svn_boolean_t is_dir,
                                       DAV_SVN__BUILD_URI_BC,
                                       revision, real_path,
                                       0 /* add_href */, pool);
+          bc_url = svn_urlpath__canonicalize(bc_url, pool);
 
           /* ugh, build_uri ignores the path and just builds the root
              of the baseline collection.  we have to tack the
              real_path on manually, ignoring its leading slash. */
           if (real_path && (! svn_path_is_empty(real_path)))
-            bc_url = svn_path_url_add_component(bc_url, real_path+1, pool);
+            bc_url = svn_urlpath__join(bc_url,
+                                       svn_path_uri_encode(real_path + 1,
+                                                           pool),
+                                       pool);
 
           /* make sure that the BC_URL is xml attribute safe. */
           bc_url = apr_xml_quote_string(pool, bc_url, 1);
         }
+      else
+        {
+          svn_checksum_t *sha1_checksum;
 
+          SVN_ERR(svn_fs_file_checksum(&sha1_checksum, svn_checksum_sha1,
+                                       uc->rev_root, real_path, FALSE, pool));
+          if (sha1_checksum)
+            sha1_checksum_str =
+              apr_psprintf(pool, " sha1-checksum=\"%s\"",
+                           svn_checksum_to_cstring(sha1_checksum, pool));
+        }
+
+      if (bc_url)
+        bc_url_str = apr_psprintf(pool, " bc-url=\"%s\"", bc_url);
 
       if (copyfrom_path == NULL)
         {
-          if (bc_url)
-            elt = apr_psprintf(pool, "<S:add-%s name=\"%s\" "
-                               "bc-url=\"%s\">" DEBUG_CR,
-                               DIR_OR_FILE(is_dir), qname, bc_url);
-          else
-            elt = apr_psprintf(pool, "<S:add-%s name=\"%s\">" DEBUG_CR,
-                               DIR_OR_FILE(is_dir), qname);
+          elt = apr_psprintf(pool,
+                             "<S:add-%s name=\"%s\"%s%s>" DEBUG_CR,
+                             DIR_OR_FILE(is_dir), qname, bc_url_str,
+                             sha1_checksum_str);
         }
       else
         {
           const char *qcopy = apr_xml_quote_string(pool, copyfrom_path, 1);
 
-          if (bc_url)
-            elt = apr_psprintf(pool, "<S:add-%s name=\"%s\" "
-                               "copyfrom-path=\"%s\" copyfrom-rev=\"%ld\" "
-                               "bc-url=\"%s\">" DEBUG_CR,
-                               DIR_OR_FILE(is_dir),
-                               qname, qcopy, copyfrom_revision,
-                               bc_url);
-          else
-            elt = apr_psprintf(pool, "<S:add-%s name=\"%s\" "
-                               "copyfrom-path=\"%s\""
-                               " copyfrom-rev=\"%ld\">" DEBUG_CR,
-                               DIR_OR_FILE(is_dir),
-                               qname, qcopy, copyfrom_revision);
-
+          elt = apr_psprintf(pool,
+                             "<S:add-%s name=\"%s\"%s%s "
+                             "copyfrom-path=\"%s\" copyfrom-rev=\"%ld\">"
+                             DEBUG_CR,
+                             DIR_OR_FILE(is_dir),
+                             qname, bc_url_str, sha1_checksum_str,
+                             qcopy, copyfrom_revision);
           child->copyfrom = TRUE;
         }
 
-      /* Resist the temptation to pass 'elt' as the format string.
-         Because it contains URIs, it might have sequences that look
-         like format string insert placeholders.  For example,
-         "this%20dir" is a valid printf() format string that means
-         "this[insert an integer of width 20 here]ir". */
-      SVN_ERR(dav_svn__send_xml(child->uc->bb, child->uc->output, "%s", elt));
+      /* Resist the temptation to use 'elt' as a format string (to the
+         likes of dav_svn__brigade_printf).  Because it contains URIs,
+         it might have sequences that look like format string insert
+         placeholders.  For example, "this%20dir" is a valid printf()
+         format string that means "this[insert an integer of width 20
+         here]ir". */
+      SVN_ERR(dav_svn__brigade_puts(child->uc->bb, child->uc->output, elt));
     }
 
   SVN_ERR(send_vsn_url(child, pool));
 
   if (uc->resource_walk)
-    SVN_ERR(dav_svn__send_xml(child->uc->bb, child->uc->output,
-                              "</S:resource>" DEBUG_CR));
+    SVN_ERR(dav_svn__brigade_puts(child->uc->bb, child->uc->output,
+                                  "</S:resource>" DEBUG_CR));
 
   *child_baton = child;
 
@@ -388,10 +433,10 @@ open_helper(svn_boolean_t is_dir,
   item_baton_t *child = make_child_baton(parent, path, pool);
   const char *qname = apr_xml_quote_string(pool, child->name, 1);
 
-  SVN_ERR(dav_svn__send_xml(child->uc->bb, child->uc->output,
-                            "<S:open-%s name=\"%s\""
-                            " rev=\"%ld\">" DEBUG_CR,
-                            DIR_OR_FILE(is_dir), qname, base_revision));
+  SVN_ERR(dav_svn__brigade_printf(child->uc->bb, child->uc->output,
+                                  "<S:open-%s name=\"%s\""
+                                  " rev=\"%ld\">" DEBUG_CR,
+                                  DIR_OR_FILE(is_dir), qname, base_revision));
   SVN_ERR(send_vsn_url(child, pool));
   *child_baton = child;
   return SVN_NO_ERROR;
@@ -399,91 +444,43 @@ open_helper(svn_boolean_t is_dir,
 
 
 static svn_error_t *
-close_helper(svn_boolean_t is_dir, item_baton_t *baton)
+close_helper(svn_boolean_t is_dir, item_baton_t *baton, apr_pool_t *pool)
 {
-  int i;
-
   if (baton->uc->resource_walk)
     return SVN_NO_ERROR;
 
   /* ### ack!  binary names won't float here! */
   /* If this is a copied file/dir, we can have removed props. */
-  if (baton->removed_props && (! baton->added || baton->copyfrom))
+  if (baton->removed_props && baton->copyfrom)
     {
       const char *qname;
+      int i;
 
       for (i = 0; i < baton->removed_props->nelts; i++)
         {
-          /* We already XML-escaped the property name in change_xxx_prop. */
           qname = APR_ARRAY_IDX(baton->removed_props, i, const char *);
-          SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                                    "<S:remove-prop name=\"%s\"/>"
-                                    DEBUG_CR, qname));
+          qname = apr_xml_quote_string(pool, qname, 1);
+          SVN_ERR(dav_svn__brigade_printf(baton->uc->bb, baton->uc->output,
+                                          "<S:remove-prop name=\"%s\"/>"
+                                          DEBUG_CR, qname));
         }
     }
 
-  if ((! baton->uc->send_all) && baton->changed_props && (! baton->added))
-    {
-      /* Tell the client to fetch all the props */
-      SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                                "<S:fetch-props/>" DEBUG_CR));
-    }
+  /* If our client need to fetch properties, let it know. */
+  if (baton->fetch_props)
+    SVN_ERR(dav_svn__brigade_printf(baton->uc->bb, baton->uc->output,
+                                    "<S:fetch-props/>" DEBUG_CR));
 
-  SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output, "<S:prop>"));
 
-  /* Both modern and non-modern clients need the checksum... */
-  if (baton->text_checksum)
-    {
-      SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                                "<V:md5-checksum>%s</V:md5-checksum>",
-                                baton->text_checksum));
-    }
-
-  /* ...but only non-modern clients want the 3 CR-related properties
-     sent like here, because they can't handle receiving these special
-     props inline like any other prop.
-     ### later on, compress via the 'scattered table' solution as
-     discussed with gstein.  -bmcs */
-  if (! baton->uc->send_all)
-    {
-      /* ### grrr, these DAV: property names are already #defined in
-         ra_dav.h, and statically defined in liveprops.c.  And now
-         they're hardcoded here.  Isn't there some header file that both
-         sides of the network can share?? */
-
-      /* ### special knowledge: svn_repos_dir_delta2 will never send
-       *removals* of the commit-info "entry props". */
-      if (baton->committed_rev)
-        SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                                  "<D:version-name>%s</D:version-name>",
-                                  baton->committed_rev));
-
-      if (baton->committed_date)
-        SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                                  "<D:creationdate>%s</D:creationdate>",
-                                  baton->committed_date));
-
-      if (baton->last_author)
-        SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                                  "<D:creator-displayname>%s"
-                                  "</D:creator-displayname>",
-                                  apr_xml_quote_string(baton->pool,
-                                                       baton->last_author,
-                                                       1)));
-
-    }
-
-  /* Close unconditionally, because we sent checksum unconditionally. */
-  SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output, "</S:prop>\n"));
-
+  /* Let's tie it off, nurse. */
   if (baton->added)
-    SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                              "</S:add-%s>" DEBUG_CR,
-                              DIR_OR_FILE(is_dir)));
+    SVN_ERR(dav_svn__brigade_printf(baton->uc->bb, baton->uc->output,
+                                    "</S:add-%s>" DEBUG_CR,
+                                    DIR_OR_FILE(is_dir)));
   else
-    SVN_ERR(dav_svn__send_xml(baton->uc->bb, baton->uc->output,
-                              "</S:open-%s>" DEBUG_CR,
-                              DIR_OR_FILE(is_dir)));
+    SVN_ERR(dav_svn__brigade_printf(baton->uc->bb, baton->uc->output,
+                                    "</S:open-%s>" DEBUG_CR,
+                                    DIR_OR_FILE(is_dir)));
   return SVN_NO_ERROR;
 }
 
@@ -495,13 +492,13 @@ maybe_start_update_report(update_ctx_t *uc)
 {
   if ((! uc->resource_walk) && (! uc->started_update))
     {
-      SVN_ERR(dav_svn__send_xml(uc->bb, uc->output,
-                                DAV_XML_HEADER DEBUG_CR
-                                "<S:update-report xmlns:S=\""
-                                SVN_XML_NAMESPACE "\" "
-                                "xmlns:V=\"" SVN_DAV_PROP_NS_DAV "\" "
-                                "xmlns:D=\"DAV:\" %s>" DEBUG_CR,
-                                uc->send_all ? "send-all=\"true\"" : ""));
+      SVN_ERR(dav_svn__brigade_printf(
+                  uc->bb, uc->output,
+                  DAV_XML_HEADER DEBUG_CR "<S:update-report xmlns:S=\""
+                  SVN_XML_NAMESPACE "\" xmlns:V=\"" SVN_DAV_PROP_NS_DAV "\" "
+                  "xmlns:D=\"DAV:\" %s %s>" DEBUG_CR,
+                  uc->send_all ? "send-all=\"true\"" : "",
+                  uc->include_props ? "inline-props=\"true\"" : ""));
 
       uc->started_update = TRUE;
     }
@@ -520,9 +517,9 @@ upd_set_target_revision(void *edit_baton,
   SVN_ERR(maybe_start_update_report(uc));
 
   if (! uc->resource_walk)
-    SVN_ERR(dav_svn__send_xml(uc->bb, uc->output,
-                              "<S:target-revision rev=\"%ld"
-                              "\"/>" DEBUG_CR, target_revision));
+    SVN_ERR(dav_svn__brigade_printf(uc->bb, uc->output,
+                                    "<S:target-revision rev=\"%ld\"/>"
+                                    DEBUG_CR, target_revision));
 
   return SVN_NO_ERROR;
 }
@@ -551,17 +548,13 @@ upd_open_root(void *edit_baton,
   SVN_ERR(maybe_start_update_report(uc));
 
   if (uc->resource_walk)
-    {
-      const char *qpath = apr_xml_quote_string(pool, b->path3, 1);
-      SVN_ERR(dav_svn__send_xml(uc->bb, uc->output,
-                                "<S:resource path=\"%s\">" DEBUG_CR, qpath));
-    }
+    SVN_ERR(dav_svn__brigade_printf(uc->bb, uc->output,
+                                    "<S:resource path=\"%s\">" DEBUG_CR,
+                                    apr_xml_quote_string(pool, b->path3, 1)));
   else
-    {
-      SVN_ERR(dav_svn__send_xml(uc->bb, uc->output,
-                                "<S:open-directory rev=\"%ld\">"
-                                DEBUG_CR, base_revision));
-    }
+    SVN_ERR(dav_svn__brigade_printf(uc->bb, uc->output,
+                                    "<S:open-directory rev=\"%ld\">" DEBUG_CR,
+                                    base_revision));
 
   /* Only transmit the root directory's Version Resource URL if
      there's no target. */
@@ -569,8 +562,8 @@ upd_open_root(void *edit_baton,
     SVN_ERR(send_vsn_url(b, pool));
 
   if (uc->resource_walk)
-    SVN_ERR(dav_svn__send_xml(uc->bb, uc->output,
-                              "</S:resource>" DEBUG_CR));
+    SVN_ERR(dav_svn__brigade_puts(uc->bb, uc->output,
+                                  "</S:resource>" DEBUG_CR));
 
   return SVN_NO_ERROR;
 }
@@ -584,9 +577,11 @@ upd_delete_entry(const char *path,
 {
   item_baton_t *parent = parent_baton;
   const char *qname = apr_xml_quote_string(pool,
-                                           svn_path_basename(path, pool), 1);
-  return dav_svn__send_xml(parent->uc->bb, parent->uc->output,
-                           "<S:delete-entry name=\"%s\"/>" DEBUG_CR, qname);
+                                           svn_relpath_basename(path, NULL),
+                                           1);
+  return dav_svn__brigade_printf(parent->uc->bb, parent->uc->output,
+                                 "<S:delete-entry name=\"%s\" rev=\"%ld\"/>"
+                                   DEBUG_CR, qname, revision);
 }
 
 
@@ -606,15 +601,63 @@ upd_add_directory(const char *path,
 
 static svn_error_t *
 upd_open_directory(const char *path,
-                                        void *parent_baton,
-                                        svn_revnum_t base_revision,
-                                        apr_pool_t *pool,
-                                        void **child_baton)
+                   void *parent_baton,
+                   svn_revnum_t base_revision,
+                   apr_pool_t *pool,
+                   void **child_baton)
 {
   return open_helper(TRUE /* is_dir */,
                      path, parent_baton, base_revision, pool, child_baton);
 }
 
+
+static svn_error_t *
+send_propchange(item_baton_t *b,
+                const char *name,
+                const svn_string_t *value,
+                apr_pool_t *pool)
+{
+  const char *qname;
+
+  /* Ensure that the property name is XML-safe. */
+  qname = apr_xml_quote_string(pool, name, 1);
+
+  if (value)
+    {
+      const char *qval;
+
+      if (svn_xml_is_xml_safe(value->data, value->len))
+        {
+          svn_stringbuf_t *tmp = NULL;
+          svn_xml_escape_cdata_string(&tmp, value, pool);
+          qval = tmp->data;
+          SVN_ERR(dav_svn__brigade_printf(b->uc->bb, b->uc->output,
+                                          "<S:set-prop name=\"%s\">",
+                                          qname));
+        }
+      else
+        {
+          qval = svn_base64_encode_string2(value, TRUE, pool)->data;
+          SVN_ERR(dav_svn__brigade_printf(b->uc->bb, b->uc->output,
+                                          "<S:set-prop name=\"%s\" "
+                                          "encoding=\"base64\">" DEBUG_CR,
+                                          qname));
+        }
+
+      SVN_ERR(dav_svn__brigade_puts(b->uc->bb, b->uc->output, qval));
+      SVN_ERR(dav_svn__brigade_puts(b->uc->bb, b->uc->output,
+                                    "</S:set-prop>" DEBUG_CR));
+    }
+  else  /* value is null, so this is a prop removal */
+    {
+      SVN_ERR(dav_svn__brigade_printf(b->uc->bb, b->uc->output,
+                                      "<S:remove-prop name=\"%s\"/>"
+                                      DEBUG_CR,
+                                      qname));
+    }
+
+  return SVN_NO_ERROR;
+}
 
 static svn_error_t *
 upd_change_xxx_prop(void *baton,
@@ -623,107 +666,59 @@ upd_change_xxx_prop(void *baton,
                     apr_pool_t *pool)
 {
   item_baton_t *b = baton;
-  const char *qname;
 
   /* Resource walks say nothing about props. */
   if (b->uc->resource_walk)
     return SVN_NO_ERROR;
 
-  /* Else this not a resource walk, so either send props or cache them
-     to send later, depending on whether this is a modern report
-     response or not. */
+  /* If we get here, this not a resource walk, so either send props or
+     cache them to send later, depending on whether this is a modern
+     report response or not. */
 
-  qname = apr_xml_quote_string(b->pool, name, 1);
-
-  /* apr_xml_quote_string doesn't realloc if there is nothing to
-     quote, so dup the name, but only if necessary. */
-  if (qname == name)
-    qname = apr_pstrdup(b->pool, name);
-
-
+  /* Even if we are not in send-all mode we have the prop changes already,
+     so send them to the client now instead of telling the client to fetch
+     them later. */
   if (b->uc->send_all)
     {
-      if (value)
-        {
-          const char *qval;
-
-          if (svn_xml_is_xml_safe(value->data, value->len))
-            {
-              svn_stringbuf_t *tmp = NULL;
-              svn_xml_escape_cdata_string(&tmp, value, pool);
-              qval = tmp->data;
-              SVN_ERR(dav_svn__send_xml(b->uc->bb, b->uc->output,
-                                        "<S:set-prop name=\"%s\">", qname));
-            }
-          else
-            {
-              qval = svn_base64_encode_string2(value, TRUE, pool)->data;
-              SVN_ERR(dav_svn__send_xml(b->uc->bb, b->uc->output,
-                                        "<S:set-prop name=\"%s\" "
-                                        "encoding=\"base64\">" DEBUG_CR,
-                                        qname));
-            }
-
-          SVN_ERR(dav_svn__send_xml(b->uc->bb, b->uc->output, "%s", qval));
-          SVN_ERR(dav_svn__send_xml(b->uc->bb, b->uc->output,
-                                    "</S:set-prop>" DEBUG_CR));
-        }
-      else  /* value is null, so this is a prop removal */
-        {
-          SVN_ERR(dav_svn__send_xml(b->uc->bb, b->uc->output,
-                                    "<S:remove-prop name=\"%s\"/>" DEBUG_CR,
-                                    qname));
-        }
+      SVN_ERR(send_propchange(b, name, value, pool));
     }
-  else  /* don't do inline response, just cache prop names for close_helper */
+  else
     {
-      /* For now, store certain entry props, because we'll need to send
-         them later as standard DAV ("D:") props.  ### this should go
-         away and we should just tunnel those props on through for the
-         client to deal with. */
-#define NSLEN (sizeof(SVN_PROP_ENTRY_PREFIX) - 1)
-      if (! strncmp(name, SVN_PROP_ENTRY_PREFIX, NSLEN))
+      if (b->added)
         {
-          if (strcmp(name, SVN_PROP_ENTRY_COMMITTED_REV) == 0)
+          /* This is an addition in "skelta" (that is, "not send-all")
+             mode so there is no strict need for an inline response.
+             Clients will assume that added objects need all to have
+             all their properties explicitly fetched from the
+             server. */
+
+          /* That said, beginning in Subversion 1.8, clients might
+             request even in skelta mode that we transmit properties
+             on added files and directories explicitly. */
+          if (value && b->uc->include_props)
             {
-              b->committed_rev = value ?
-                apr_pstrdup(b->pool, value->data) : NULL;
+              SVN_ERR(send_propchange(b, name, value, pool));
             }
-          else if (strcmp(name, SVN_PROP_ENTRY_COMMITTED_DATE) == 0)
+
+          /* Now, if the object is actually a copy and this is a
+             property removal, we'll still need to cache (and later
+             transmit) property removals, because fetching the
+             object's current property set alone isn't sufficient to
+             communicate the fact that additional properties were, in
+             fact, removed from the copied base object in order to
+             arrive at that set. */
+          if (b->copyfrom && (! value))
             {
-              b->committed_date = value ?
-                apr_pstrdup(b->pool, value->data) : NULL;
-            }
-          else if (strcmp(name, SVN_PROP_ENTRY_LAST_AUTHOR) == 0)
-            {
-              b->last_author = value ?
-                apr_pstrdup(b->pool, value->data) : NULL;
-            }
-          else if ((strcmp(name, SVN_PROP_ENTRY_LOCK_TOKEN) == 0)
-                   && (! value))
-            {
-              /* We only support delete of lock tokens, not add/modify. */
               if (! b->removed_props)
                 b->removed_props = apr_array_make(b->pool, 1, sizeof(name));
-              APR_ARRAY_PUSH(b->removed_props, const char *) = qname;
+
+              APR_ARRAY_PUSH(b->removed_props, const char *) = name;
             }
-          return SVN_NO_ERROR;
-        }
-#undef NSLEN
-
-      if (value)
-        {
-          if (! b->changed_props)
-            b->changed_props = apr_array_make(b->pool, 1, sizeof(name));
-
-          APR_ARRAY_PUSH(b->changed_props, const char *) = qname;
         }
       else
         {
-          if (! b->removed_props)
-            b->removed_props = apr_array_make(b->pool, 1, sizeof(name));
-
-          APR_ARRAY_PUSH(b->removed_props, const char *) = qname;
+          /* "skelta" mode non-addition.  Just send the change. */
+          SVN_ERR(send_propchange(b, name, value, pool));
         }
     }
 
@@ -734,7 +729,7 @@ upd_change_xxx_prop(void *baton,
 static svn_error_t *
 upd_close_directory(void *dir_baton, apr_pool_t *pool)
 {
-  return close_helper(TRUE /* is_dir */, dir_baton);
+  return close_helper(TRUE /* is_dir */, dir_baton, pool);
 }
 
 
@@ -790,33 +785,26 @@ window_handler(svn_txdelta_window_t *window, void *baton)
   if (! wb->seen_first_window)
     {
       wb->seen_first_window = TRUE;
+
       if (!wb->base_checksum)
-        SVN_ERR(dav_svn__send_xml(wb->uc->bb, wb->uc->output, "<S:txdelta>"));
+        SVN_ERR(dav_svn__brigade_puts(wb->uc->bb, wb->uc->output,
+                                      "<S:txdelta>"));
       else
-        SVN_ERR(dav_svn__send_xml(wb->uc->bb, wb->uc->output,
-                                  "<S:txdelta base-checksum=\"%s\">",
-                                  wb->base_checksum));
+        SVN_ERR(dav_svn__brigade_printf(wb->uc->bb, wb->uc->output,
+                                        "<S:txdelta base-checksum=\"%s\">",
+                                        wb->base_checksum));
     }
 
   SVN_ERR(wb->handler(window, wb->handler_baton));
 
   if (window == NULL)
-    SVN_ERR(dav_svn__send_xml(wb->uc->bb, wb->uc->output, "</S:txdelta>"));
+    {
+      SVN_ERR(dav_svn__brigade_puts(wb->uc->bb, wb->uc->output,
+                                    "</S:txdelta>"));
+    }
 
   return SVN_NO_ERROR;
 }
-
-
-/* This implements 'svn_txdelta_window_handler_t'.
-   During a resource walk, the driver sends an empty window as a
-   boolean indicating that a change happened to this file, but we
-   don't want to send anything over the wire as a result. */
-static svn_error_t *
-dummy_window_handler(svn_txdelta_window_t *window, void *baton)
-{
-  return SVN_NO_ERROR;
-}
-
 
 static svn_error_t *
 upd_apply_textdelta(void *file_baton,
@@ -837,7 +825,7 @@ upd_apply_textdelta(void *file_baton,
      we don't actually want to transmit text-deltas. */
   if (file->uc->resource_walk || (! file->uc->send_all))
     {
-      *handler = dummy_window_handler;
+      *handler = svn_delta_noop_window_handler;
       *handler_baton = NULL;
       return SVN_NO_ERROR;
     }
@@ -850,9 +838,9 @@ upd_apply_textdelta(void *file_baton,
                                                      wb->uc->output,
                                                      file->pool);
 
-  svn_txdelta_to_svndiff2(&(wb->handler), &(wb->handler_baton),
+  svn_txdelta_to_svndiff3(&(wb->handler), &(wb->handler_baton),
                           base64_stream, file->uc->svndiff_version,
-                          file->pool);
+                          file->uc->compression_level, file->pool);
 
   *handler = window_handler;
   *handler_baton = wb;
@@ -866,23 +854,43 @@ upd_close_file(void *file_baton, const char *text_checksum, apr_pool_t *pool)
 {
   item_baton_t *file = file_baton;
 
-  file->text_checksum = text_checksum ?
-    apr_pstrdup(file->pool, text_checksum) : NULL;
-
   /* If we are not in "send all" mode, and this file is not a new
      addition or didn't otherwise have changed text, tell the client
      to fetch it. */
   if ((! file->uc->send_all) && (! file->added) && file->text_changed)
     {
-      const char *elt;
-      elt = apr_psprintf(pool, "<S:fetch-file%s%s%s/>" DEBUG_CR,
-                         file->base_checksum ? " base-checksum=\"" : "",
-                         file->base_checksum ? file->base_checksum : "",
-                         file->base_checksum ? "\"" : "");
-      SVN_ERR(dav_svn__send_xml(file->uc->bb, file->uc->output, "%s", elt));
+      svn_checksum_t *sha1_checksum;
+      const char *real_path = get_real_fs_path(file, pool);
+      const char *sha1_digest = NULL;
+
+      /* Try to grab the SHA1 checksum, if it's readily available, and
+         pump it down to the client, too. */
+      SVN_ERR(svn_fs_file_checksum(&sha1_checksum, svn_checksum_sha1,
+                                   file->uc->rev_root, real_path, FALSE, pool));
+      if (sha1_checksum)
+        sha1_digest = svn_checksum_to_cstring(sha1_checksum, pool);
+
+      SVN_ERR(dav_svn__brigade_printf
+              (file->uc->bb, file->uc->output,
+               "<S:fetch-file%s%s%s%s%s%s/>" DEBUG_CR,
+               file->base_checksum ? " base-checksum=\"" : "",
+               file->base_checksum ? file->base_checksum : "",
+               file->base_checksum ? "\"" : "",
+               sha1_digest ? " sha1-checksum=\"" : "",
+               sha1_digest ? sha1_digest : "",
+               sha1_digest ? "\"" : ""));
     }
 
-  return close_helper(FALSE /* is_dir */, file);
+  if (text_checksum)
+    {
+      SVN_ERR(dav_svn__brigade_printf(file->uc->bb, file->uc->output,
+                                      "<S:prop>"
+                                      "<V:md5-checksum>%s</V:md5-checksum>"
+                                      "</S:prop>",
+                                      text_checksum));
+    }
+
+  return close_helper(FALSE /* is_dir */, file, pool);
 }
 
 
@@ -904,13 +912,57 @@ malformed_element_error(const char *tagname, apr_pool_t *pool)
 {
   const char *errstr = apr_pstrcat(pool, "The request's '", tagname,
                                    "' element is malformed; there "
-                                   "is a problem with the client.", NULL);
+                                   "is a problem with the client.",
+                                   (char *)NULL);
   return dav_svn__new_error_tag(pool, HTTP_BAD_REQUEST, 0, errstr,
                                 SVN_DAV_ERROR_NAMESPACE, SVN_DAV_ERROR_TAG);
 }
 
-dav_error *
 
+/* Validate that REVISION is a valid revision number for repository in
+   which YOUNGEST is the latest revision.  Use RESOURCE as a
+   convenient way to access the request record and a pool for error
+   messaging.   (It's okay if REVISION is SVN_INVALID_REVNUM, as in
+   the related contexts that just means "the youngest revision".)
+
+   REVTYPE is just a string describing the type/purpose of REVISION,
+   used in the generated error string.  */
+static dav_error *
+validate_input_revision(svn_revnum_t revision,
+                        svn_revnum_t youngest,
+                        const char *revtype,
+                        const dav_resource *resource)
+{
+  if (! SVN_IS_VALID_REVNUM(revision))
+    return SVN_NO_ERROR;
+
+  if (revision > youngest)
+    {
+      svn_error_t *serr;
+
+      if (dav_svn__get_master_uri(resource->info->r))
+        {
+          serr = svn_error_createf(SVN_ERR_FS_NO_SUCH_REVISION, 0,
+                                   "No such %s '%ld' found in the repository.  "
+                                   "Perhaps the repository is out of date with "
+                                   "respect to the master repository?",
+                                   revtype, revision);
+        }
+      else
+        {
+          serr = svn_error_createf(SVN_ERR_FS_NO_SUCH_REVISION, 0,
+                                   "No such %s '%ld' found in the repository.",
+                                   revtype, revision);
+        }
+      return dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
+                                  "Invalid revision found in update report "
+                                  "request.", resource->pool);
+    }
+  return SVN_NO_ERROR;
+}
+
+
+dav_error *
 dav_svn__update_report(const dav_resource *resource,
                        const apr_xml_doc *doc,
                        ap_filter_t *output)
@@ -919,8 +971,7 @@ dav_svn__update_report(const dav_resource *resource,
   apr_xml_elem *child;
   void *rbaton = NULL;
   update_ctx_t uc = { 0 };
-  svn_revnum_t revnum = SVN_INVALID_REVNUM;
-  svn_boolean_t revnum_is_head = FALSE;
+  svn_revnum_t youngest, revnum = SVN_INVALID_REVNUM;
   svn_revnum_t from_revnum = SVN_INVALID_REVNUM;
   int ns;
   /* entry_counter and entry_is_empty are for operational logging. */
@@ -946,14 +997,13 @@ dav_svn__update_report(const dav_resource *resource,
   arb.r = resource->info->r;
   arb.repos = repos;
 
-  if (resource->info->restype != DAV_SVN_RESTYPE_VCC)
-    {
-      return dav_svn__new_error_tag(resource->pool, HTTP_CONFLICT, 0,
-                                    "This report can only be run against "
-                                    "a VCC.",
-                                    SVN_DAV_ERROR_NAMESPACE,
-                                    SVN_DAV_ERROR_TAG);
-    }
+  if ((resource->info->restype != DAV_SVN_RESTYPE_VCC)
+      && (resource->info->restype != DAV_SVN_RESTYPE_ME))
+    return dav_svn__new_error_tag(resource->pool, HTTP_CONFLICT, 0,
+                                  "This report can only be run against "
+                                  "a VCC or root-stub URI.",
+                                  SVN_DAV_ERROR_NAMESPACE,
+                                  SVN_DAV_ERROR_TAG);
 
   ns = dav_svn__find_ns(doc->namespaces, SVN_XML_NAMESPACE);
   if (ns == -1)
@@ -967,11 +1017,15 @@ dav_svn__update_report(const dav_resource *resource,
                                     SVN_DAV_ERROR_TAG);
     }
 
-  /* If server configuration permits bulk updates (a report with props
-     and textdeltas inline, rather than placeholder tags that tell the
-     client to do further fetches), look to see if client requested as
-     much.  */
-  if (repos->bulk_updates)
+  /* SVNAllowBulkUpdates On/Prefer: server configuration permits bulk updates
+     (a report with props and textdeltas inline, rather than placeholder tags
+     that tell the client to do further fetches), look to see if client
+     requested as much.
+
+     SVNAllowBulkUpdates Off: no bulk updates allowed, force skelta mode.
+   */
+  if (repos->bulk_updates == CONF_BULKUPD_ON ||
+      repos->bulk_updates == CONF_BULKUPD_PREFER)
     {
       apr_xml_attr *this_attr;
 
@@ -981,10 +1035,19 @@ dav_svn__update_report(const dav_resource *resource,
               && (strcmp(this_attr->value, "true") == 0))
             {
               uc.send_all = TRUE;
+              uc.include_props = TRUE;
               break;
             }
         }
     }
+
+  /* Ask the repository about its youngest revision (which we'll need
+     for some input validation later). */
+  if ((serr = svn_fs_youngest_rev(&youngest, repos->fs, resource->pool)))
+    return dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
+                                "Could not determine the youngest "
+                                "revision for the update process.",
+                                resource->pool);
 
   for (child = doc->root->first_child; child != NULL; child = child->next)
     {
@@ -1007,8 +1070,8 @@ dav_svn__update_report(const dav_resource *resource,
           cdata = dav_xml_get_cdata(child, resource->pool, 0);
           if (! *cdata)
             return malformed_element_error(child->name, resource->pool);
-          if ((derr = dav_svn__test_canonical(cdata, resource->pool)))
-            return derr;
+          if (svn_path_is_url(cdata))
+            cdata = svn_uri_canonicalize(cdata, resource->pool);
           if ((serr = dav_svn__simple_parse_uri(&this_info, resource,
                                                 cdata, resource->pool)))
             return dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
@@ -1022,8 +1085,8 @@ dav_svn__update_report(const dav_resource *resource,
           cdata = dav_xml_get_cdata(child, resource->pool, 0);
           if (! *cdata)
             return malformed_element_error(child->name, resource->pool);
-          if ((derr = dav_svn__test_canonical(cdata, resource->pool)))
-            return derr;
+          if (svn_path_is_url(cdata))
+            cdata = svn_uri_canonicalize(cdata, resource->pool);
           if ((serr = dav_svn__simple_parse_uri(&this_info, resource,
                                                 cdata, resource->pool)))
             return dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
@@ -1103,6 +1166,31 @@ dav_svn__update_report(const dav_resource *resource,
           if (strcmp(cdata, "no") == 0)
             text_deltas = FALSE;
         }
+      if (child->ns == ns && strcmp(child->name, "include-props") == 0)
+        {
+          cdata = dav_xml_get_cdata(child, resource->pool, 1);
+          if (! *cdata)
+            return malformed_element_error(child->name, resource->pool);
+          if (strcmp(cdata, "no") != 0)
+            uc.include_props = TRUE;
+        }
+    }
+
+  /* If a target revision wasn't requested, or the requested target
+     revision was invalid, just update to HEAD as of the moment we
+     queried the youngest revision.  Otherwise, at least make sure the
+     request makes sense in light of that youngest revision
+     number.  */
+  if (! SVN_IS_VALID_REVNUM(revnum))
+    {
+      revnum = youngest;
+    }
+  else
+    {
+      derr = validate_input_revision(revnum, youngest, "target revision",
+                                     resource);
+      if (derr)
+        return derr;
     }
 
   if (!saw_depth && !saw_recursive && (requested_depth == svn_depth_unknown))
@@ -1120,39 +1208,31 @@ dav_svn__update_report(const dav_resource *resource,
          SVN_DAV_ERROR_TAG);
     }
 
-  /* If a revision for this operation was not dictated to us, this
-     means "update to whatever the current HEAD is now". */
-  if (revnum == SVN_INVALID_REVNUM)
-    {
-      if ((serr = svn_fs_youngest_rev(&revnum, repos->fs, resource->pool)))
-        return dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
-                                    "Could not determine the youngest "
-                                    "revision for the update process.",
-                                    resource->pool);
-      revnum_is_head = TRUE;
-    }
-
   uc.svndiff_version = resource->info->svndiff_version;
+  uc.compression_level = dav_svn__get_compression_level(resource->info->r);
   uc.resource = resource;
   uc.output = output;
   uc.anchor = src_path;
   uc.target = target;
   uc.bb = apr_brigade_create(resource->pool, output->c->bucket_alloc);
   uc.pathmap = NULL;
+  uc.enable_v2_response = ((resource->info->restype == DAV_SVN_RESTYPE_ME)
+                           && (resource->info->repos->v2_protocol));
+
   if (dst_path) /* we're doing a 'switch' */
     {
       if (*target)
         {
           /* if the src is split into anchor/target, so must the
              telescoping dst_path be. */
-          uc.dst_path = svn_path_dirname(dst_path, resource->pool);
+          uc.dst_path = svn_fspath__dirname(dst_path, resource->pool);
 
           /* Also, the svn_repos_dir_delta2() is going to preserve our
              target's name, so we need a pathmap entry for that. */
           if (! uc.pathmap)
             uc.pathmap = apr_hash_make(resource->pool);
           add_to_path_map(uc.pathmap,
-                          svn_path_join(src_path, target, resource->pool),
+                          svn_fspath__join(src_path, target, resource->pool),
                           dst_path);
         }
       else
@@ -1199,7 +1279,7 @@ dav_svn__update_report(const dav_resource *resource,
   editor->close_file = upd_close_file;
   editor->absent_file = upd_absent_file;
   editor->close_edit = upd_close_edit;
-  if ((serr = svn_repos_begin_report2(&rbaton, revnum,
+  if ((serr = svn_repos_begin_report3(&rbaton, revnum,
                                       repos->repos,
                                       src_path, target,
                                       dst_path,
@@ -1210,6 +1290,7 @@ dav_svn__update_report(const dav_resource *resource,
                                       editor, &uc,
                                       dav_svn__authz_read_func(&arb),
                                       &arb,
+                                      0,  /* disable zero-copy for now */
                                       resource->pool)))
     {
       return dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
@@ -1245,27 +1326,10 @@ dav_svn__update_report(const dav_resource *resource,
                   {
                     rev = SVN_STR_TO_REV(this_attr->value);
                     saw_rev = TRUE;
-                    if (revnum_is_head && rev > revnum)
-                      {
-                        if (dav_svn__get_master_uri(resource->info->r))
-                          return dav_svn__new_error_tag(
-                                     resource->pool,
-                                     HTTP_INTERNAL_SERVER_ERROR, 0,
-                                     "A reported revision is higher than the "
-                                     "current repository HEAD revision.  "
-                                     "Perhaps the repository is out of date "
-                                     "with respect to the master repository?",
-                                     SVN_DAV_ERROR_NAMESPACE,
-                                     SVN_DAV_ERROR_TAG);
-                        else
-                          return dav_svn__new_error_tag(
-                                     resource->pool,
-                                     HTTP_INTERNAL_SERVER_ERROR, 0,
-                                     "A reported revision is higher than the "
-                                     "current repository HEAD revision.",
-                                     SVN_DAV_ERROR_NAMESPACE,
-                                     SVN_DAV_ERROR_TAG);
-                      }
+                    if ((derr = validate_input_revision(rev, youngest,
+                                                        "reported revision",
+                                                        resource)))
+                      return derr;
                   }
                 else if (strcmp(this_attr->name, "depth") == 0)
                   depth = svn_depth_from_word(this_attr->value);
@@ -1322,8 +1386,8 @@ dav_svn__update_report(const dav_resource *resource,
                 const char *this_path;
                 if (! uc.pathmap)
                   uc.pathmap = apr_hash_make(resource->pool);
-                this_path = svn_path_join_many(apr_hash_pool_get(uc.pathmap),
-                                               src_path, target, path, NULL);
+                this_path = svn_fspath__join(src_path, target, resource->pool);
+                this_path = svn_fspath__join(this_path, path, resource->pool);
                 add_to_path_map(uc.pathmap, this_path, linkpath);
               }
           }
@@ -1347,16 +1411,10 @@ dav_svn__update_report(const dav_resource *resource,
   /* Try to deduce what sort of client command is being run, then
      make this guess available to apache's logging subsystem. */
   {
-    const char *action, *spath, *log_depth;
-
-    if (requested_depth == svn_depth_unknown)
-      log_depth = "";
-    else
-      log_depth = apr_pstrcat(resource->pool, " depth=",
-                              svn_depth_to_word(requested_depth), NULL);
+    const char *action, *spath;
 
     if (target)
-      spath = svn_path_join(src_path, target, resource->pool);
+      spath = svn_fspath__join(src_path, target, resource->pool);
     else
       spath = src_path;
 
@@ -1452,8 +1510,8 @@ dav_svn__update_report(const dav_resource *resource,
           goto cleanup;
         }
 
-      serr = dav_svn__send_xml(uc.bb, uc.output,
-                               "<S:resource-walk>" DEBUG_CR);
+      serr = dav_svn__brigade_puts(uc.bb, uc.output,
+                                   "<S:resource-walk>" DEBUG_CR);
       if (serr)
         {
           derr = dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
@@ -1486,8 +1544,8 @@ dav_svn__update_report(const dav_resource *resource,
           goto cleanup;
         }
 
-      serr = dav_svn__send_xml(uc.bb, uc.output,
-                               "</S:resource-walk>" DEBUG_CR);
+      serr = dav_svn__brigade_puts(uc.bb, uc.output,
+                                   "</S:resource-walk>" DEBUG_CR);
       if (serr)
         {
           derr = dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
@@ -1501,8 +1559,8 @@ dav_svn__update_report(const dav_resource *resource,
      started in the first place. */
   if (uc.started_update)
     {
-      if ((serr = dav_svn__send_xml(uc.bb, uc.output,
-                                    "</S:update-report>" DEBUG_CR)))
+      if ((serr = dav_svn__brigade_puts(uc.bb, uc.output,
+                                        "</S:update-report>" DEBUG_CR)))
         {
           derr = dav_svn__convert_err(serr, HTTP_INTERNAL_SERVER_ERROR,
                                       "Unable to complete update report.",

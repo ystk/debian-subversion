@@ -1,17 +1,22 @@
 /* nodes-table.c : working with the `nodes' table
  *
  * ====================================================================
- * Copyright (c) 2000-2004 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -94,7 +99,7 @@ svn_fs_bdb__new_node_id(svn_fs_id_t **id_p,
   /* Get the current value associated with the `next-key' key in the table.  */
   svn_fs_base__str_to_dbt(&query, NEXT_KEY_KEY);
   svn_fs_base__trail_debug(trail, "nodes", "get");
-  SVN_ERR(BDB_WRAP(fs, _("allocating new node ID (getting 'next-key')"),
+  SVN_ERR(BDB_WRAP(fs, N_("allocating new node ID (getting 'next-key')"),
                    bfd->nodes->get(bfd->nodes, trail->db_txn,
                                    &query,
                                    svn_fs_base__result_dbt(&result),
@@ -112,7 +117,7 @@ svn_fs_bdb__new_node_id(svn_fs_id_t **id_p,
                            svn_fs_base__str_to_dbt(&query, NEXT_KEY_KEY),
                            svn_fs_base__str_to_dbt(&result, next_key),
                            0);
-  SVN_ERR(BDB_WRAP(fs, _("bumping next node ID key"), db_err));
+  SVN_ERR(BDB_WRAP(fs, N_("bumping next node ID key"), db_err));
 
   /* Create and return the new node id. */
   *id_p = svn_fs_base__id_create(next_node_id, copy_id, txn_id, pool);
@@ -174,7 +179,7 @@ svn_fs_bdb__delete_nodes_entry(svn_fs_t *fs,
   DBT key;
 
   svn_fs_base__trail_debug(trail, "nodes", "del");
-  return BDB_WRAP(fs, _("deleting entry from 'nodes' table"),
+  return BDB_WRAP(fs, N_("deleting entry from 'nodes' table"),
                   bfd->nodes->del(bfd->nodes,
                                   trail->db_txn,
                                   svn_fs_base__id_to_dbt(&key, id, pool),
@@ -212,7 +217,7 @@ svn_fs_bdb__get_node_revision(node_revision_t **noderev_p,
     return svn_fs_base__err_dangling_id(fs, id);
 
   /* Handle any other error conditions.  */
-  SVN_ERR(BDB_WRAP(fs, _("reading node revision"), db_err));
+  SVN_ERR(BDB_WRAP(fs, N_("reading node revision"), db_err));
 
   /* If our caller doesn't really care about the return value here,
      just return successfully. */
@@ -245,7 +250,7 @@ svn_fs_bdb__put_node_revision(svn_fs_t *fs,
   SVN_ERR(svn_fs_base__unparse_node_revision_skel(&skel, noderev,
                                                   bfd->format, pool));
   svn_fs_base__trail_debug(trail, "nodes", "put");
-  return BDB_WRAP(fs, _("storing node revision"),
+  return BDB_WRAP(fs, N_("storing node revision"),
                   bfd->nodes->put(bfd->nodes, db_txn,
                                   svn_fs_base__id_to_dbt(&key, id, pool),
                                   svn_fs_base__skel_to_dbt(&value, skel,

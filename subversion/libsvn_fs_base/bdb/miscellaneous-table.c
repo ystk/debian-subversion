@@ -1,17 +1,22 @@
 /* miscellaneous-table.c : operations on the `miscellaneous' table
  *
  * ====================================================================
- * Copyright (c) 2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -87,7 +92,7 @@ svn_fs_bdb__miscellaneous_set(svn_fs_t *fs,
   if (val == NULL)
     {
       svn_fs_base__trail_debug(trail, "miscellaneous", "del");
-      return BDB_WRAP(fs, "deleting record from 'miscellaneous' table",
+      return BDB_WRAP(fs, N_("deleting record from 'miscellaneous' table"),
                       bfd->miscellaneous->del(bfd->miscellaneous,
                                               trail->db_txn, &key, 0));
     }
@@ -95,7 +100,7 @@ svn_fs_bdb__miscellaneous_set(svn_fs_t *fs,
     {
       svn_fs_base__str_to_dbt(&value, val);
       svn_fs_base__trail_debug(trail, "miscellaneous", "add");
-      return BDB_WRAP(fs, "storing miscellaneous record",
+      return BDB_WRAP(fs, N_("storing miscellaneous record"),
                       bfd->miscellaneous->put(bfd->miscellaneous,
                                               trail->db_txn,
                                               &key, &value, 0));
@@ -123,7 +128,7 @@ svn_fs_bdb__miscellaneous_get(const char **val,
 
   if (db_err != DB_NOTFOUND)
     {
-      SVN_ERR(BDB_WRAP(fs, "fetching miscellaneous record", db_err));
+      SVN_ERR(BDB_WRAP(fs, N_("fetching miscellaneous record"), db_err));
       *val = apr_pstrmemdup(pool, value.data, value.size);
     }
   return SVN_NO_ERROR;

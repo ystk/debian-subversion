@@ -1,3 +1,21 @@
+dnl ===================================================================
+dnl   Licensed to the Apache Software Foundation (ASF) under one
+dnl   or more contributor license agreements.  See the NOTICE file
+dnl   distributed with this work for additional information
+dnl   regarding copyright ownership.  The ASF licenses this file
+dnl   to you under the Apache License, Version 2.0 (the
+dnl   "License"); you may not use this file except in compliance
+dnl   with the License.  You may obtain a copy of the License at
+dnl
+dnl     http://www.apache.org/licenses/LICENSE-2.0
+dnl
+dnl   Unless required by applicable law or agreed to in writing,
+dnl   software distributed under the License is distributed on an
+dnl   "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+dnl   KIND, either express or implied.  See the License for the
+dnl   specific language governing permissions and limitations
+dnl   under the License.
+dnl ===================================================================
 dnl
 dnl Macros to find an Apache installation
 dnl
@@ -61,8 +79,8 @@ VERSION_OKAY
         ])
 
     elif test "$APXS_EXPLICIT" != ""; then
-        AC_MSG_ERROR(no - APXS refers to an old version of Apache
-                     Unable to locate $APXS_INCLUDE/mod_dav.h)
+        AC_MSG_ERROR([no - APXS refers to an old version of Apache
+                      Unable to locate $APXS_INCLUDE/mod_dav.h])
     else
         AC_MSG_RESULT(no - Unable to locate $APXS_INCLUDE/mod_dav.h)
         APXS=""
@@ -79,7 +97,10 @@ if test -n "$APXS" && test "$APXS" != "no"; then
       apache_minor_version_wanted_regex="0"
       ;;
     1)
-      apache_minor_version_wanted_regex=["[1-4]"]
+      apache_minor_version_wanted_regex=["[1-5]"]
+      ;;
+    2)
+      apache_minor_version_wanted_regex=["[3-5]"]
       ;;
     *)
       AC_MSG_ERROR([unknown APR version])
@@ -87,7 +108,7 @@ if test -n "$APXS" && test "$APXS" != "no"; then
   esac
   old_CPPFLAGS="$CPPFLAGS"
   CPPFLAGS="$CPPFLAGS $SVN_APR_INCLUDES"
-  AC_EGREP_CPP([[apache_minor_version= *"$apache_minor_version_wanted_regex"]],
+  AC_EGREP_CPP([apache_minor_version= *\"$apache_minor_version_wanted_regex\"],
                [
 #include "$APXS_INCLUDE/ap_release.h"
 apache_minor_version=AP_SERVER_MINORVERSION],
@@ -97,35 +118,55 @@ apache_minor_version=AP_SERVER_MINORVERSION],
   CPPFLAGS="$old_CPPFLAGS"
 fi
 
+# check for some busted versions of mod_dav
+# in particular 2.2.25, 2.4.5, and 2.4.6 had the following bugs which are
+# troublesome for Subversion:
+# PR 55304: https://issues.apache.org/bugzilla/show_bug.cgi?id=55304
+# PR 55306: https://issues.apache.org/bugzilla/show_bug.cgi?id=55306
+# PR 55397: https://issues.apache.org/bugzilla/show_bug.cgi?id=55397
+if test -n "$APXS" && test "$APXS" != "no"; then
+  AC_MSG_CHECKING([mod_dav version])
+  old_CPPFLAGS="$CPPFLAGS"
+  CPPFLAGS="$CPPFLAGS $SVN_APR_INCLUDES"
+  blacklisted_versions_regex=["\"2\" \"\.\" (\"2\" \"\.\" \"25\"|\"4\" \"\.\" \"[56]\")"]
+  AC_EGREP_CPP([apache_version= *$blacklisted_versions_regex],
+               [
+#include "$APXS_INCLUDE/ap_release.h"
+apache_version=AP_SERVER_BASEREVISION],
+               [AC_MSG_RESULT([broken])
+                AC_MSG_ERROR([Apache httpd version includes a broken mod_dav; use a newer version of httpd])],
+               [AC_MSG_RESULT([acceptable])])
+  CPPFLAGS="$old_CPPFLAGS"
+fi
+
 AC_ARG_WITH(apache-libexecdir,
             [AS_HELP_STRING([[--with-apache-libexecdir[=PATH]]],
-                            [Install Apache modules to PATH instead of Apache's
-                             configured modules directory; PATH "no"
-                             or --without-apache-libexecdir means install
-                             to LIBEXECDIR.])],
-[
-    APACHE_LIBEXECDIR="$withval"
-])
+                            [Install Apache modules to Apache's configured
+                             modules directory instead of LIBEXECDIR;
+                             if PATH is given, install to PATH.])],
+[APACHE_LIBEXECDIR="$withval"],[APACHE_LIBEXECDIR='no'])
 
+INSTALL_APACHE_MODS=false
 if test -n "$APXS" && test "$APXS" != "no"; then
     APXS_CC="`$APXS -q CC`"
     APACHE_INCLUDES="$APACHE_INCLUDES -I$APXS_INCLUDE"
 
-    if test -z "$APACHE_LIBEXECDIR"; then
-        APACHE_LIBEXECDIR="`$APXS -q libexecdir`"
-    elif test "$APACHE_LIBEXECDIR" = 'no'; then
+    if test "$APACHE_LIBEXECDIR" = 'no'; then
         APACHE_LIBEXECDIR="$libexecdir"
+    elif test "$APACHE_LIBEXECDIR" = 'yes'; then
+        APACHE_LIBEXECDIR="`$APXS -q libexecdir`"
     fi
 
     BUILD_APACHE_RULE=apache-mod
     INSTALL_APACHE_RULE=install-mods-shared
+    INSTALL_APACHE_MODS=true
 
     case $host in
       *-*-cygwin*)
         APACHE_LDFLAGS="-shrext .so"
         ;;
     esac
-else
+elif test x"$APXS" != x"no"; then
     echo "=================================================================="
     echo "WARNING: skipping the build of mod_dav_svn"
     echo "         try using --with-apxs"
@@ -136,6 +177,7 @@ AC_SUBST(APXS)
 AC_SUBST(APACHE_LDFLAGS)
 AC_SUBST(APACHE_INCLUDES)
 AC_SUBST(APACHE_LIBEXECDIR)
+AC_SUBST(INSTALL_APACHE_MODS)
 
 # there aren't any flags that interest us ...
 #if test -n "$APXS" && test "$APXS" != "no"; then
