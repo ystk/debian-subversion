@@ -1,3 +1,23 @@
+# encoding = utf-8
+# ====================================================================
+#    Licensed to the Apache Software Foundation (ASF) under one
+#    or more contributor license agreements.  See the NOTICE file
+#    distributed with this work for additional information
+#    regarding copyright ownership.  The ASF licenses this file
+#    to you under the Apache License, Version 2.0 (the
+#    "License"); you may not use this file except in compliance
+#    with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing,
+#    software distributed under the License is distributed on an
+#    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#    KIND, either express or implied.  See the License for the
+#    specific language governing permissions and limitations
+#    under the License.
+# ====================================================================
+
 require "my-assertions"
 require "util"
 
@@ -33,7 +53,13 @@ class SvnCoreTest < Test::Unit::TestCase
     now = Time.now.gmtime
     str = now.strftime("%Y-%m-%dT%H:%M:%S.") + "#{now.usec}Z"
 
-    assert_equal(now, Time.from_svn_format(str))
+    if RUBY_VERSION > '1.9'
+      # ruby 1.9 Time comparison gets into the nano-seconds, strftime
+      # shaves these off. So we can compare epoch time instead
+      assert_equal(now.to_i, Time.from_svn_format(str).gmtime.to_i)
+    else
+      assert_equal(now, Time.from_svn_format(str).gmtime)
+    end
 
     apr_time = now.to_i * 1000000 + now.usec
     assert_equal(apr_time, now.to_apr_time)
@@ -225,7 +251,11 @@ class SvnCoreTest < Test::Unit::TestCase
       config_infos << [section, name, value]
     end
     assert_equal(infos.sort, config_infos.sort)
-    assert_equal(infos.sort, config.collect {|args| args}.sort)
+    if RUBY_VERSION > '1.9'
+      assert_equal(infos.sort, config.collect {|sect,name,val| [sect,name,val]}.sort)
+    else
+      assert_equal(infos.sort, config.collect {|args| args}.sort)
+    end
   end
 
   def test_config_find_group
@@ -513,7 +543,13 @@ EOD
     date_str = now.strftime("%Y-%m-%dT%H:%M:%S")
     date_str << ".#{now.usec}Z"
     info.date = date_str
-    assert_equal(now, info.date)
+    if RUBY_VERSION > '1.9'
+      # ruby 1.9 Time comparison gets into the nano-seconds, strftime
+      # shaves these off. So we can compare epoch time instead
+      assert_equal(now.to_i, info.date.gmtime.to_i)
+    else
+      assert_equal(now, info.date.gmtime)
+    end
   end
 
   def test_svn_prop
@@ -774,55 +810,55 @@ EOM
   end
 
   def test_range_list_diff
-    range_list1 = Svn::Core::RangeList.new([5, 5, true], [9, 13, true])
+    range_list1 = Svn::Core::RangeList.new([4, 5, true], [9, 13, true])
     range_list2 = Svn::Core::RangeList.new([7, 11, true])
 
     deleted, added = range_list1.diff(range_list2)
     assert_equal([[7, 9, true]], added.collect {|range| range.to_a})
-    assert_equal([[5, 5, true], [11, 13, true]],
+    assert_equal([[4, 5, true], [11, 13, true]],
                  deleted.collect {|range| range.to_a})
   end
 
   def test_range_list_merge
-    range_list1 = Svn::Core::RangeList.new([5, 5, true],
-                                           [7, 7, true], [9, 13, true])
+    range_list1 = Svn::Core::RangeList.new([4, 5, true],
+                                           [7, 8, true], [9, 13, true])
     range_list2 = Svn::Core::RangeList.new([5, 9, true])
 
     merged = range_list1.merge(range_list2)
-    assert_equal([[5, 13, true]], merged.collect {|range| range.to_a})
+    assert_equal([[4, 13, true]], merged.collect {|range| range.to_a})
   end
 
   def test_range_list_remove
-    range_list1 = Svn::Core::RangeList.new([5, 5, true],
-                                           [7, 7, true], [9, 13, true])
-    range_list2 = Svn::Core::RangeList.new([5, 9, true])
+    range_list1 = Svn::Core::RangeList.new([4, 5, true],
+                                           [7, 8, true], [10, 13, true])
+    range_list2 = Svn::Core::RangeList.new([4, 9, true])
 
     removed = range_list1.remove(range_list2)
-    assert_equal([[9, 13, true]], removed.collect {|range| range.to_a})
+    assert_equal([[10, 13, true]], removed.collect {|range| range.to_a})
   end
 
   def test_range_list_intersect
-    range_list1 = Svn::Core::RangeList.new([5, 9, true])
-    range_list2 = Svn::Core::RangeList.new([5, 5, true],
-                                           [7, 7, true], [9, 13, true])
+    range_list1 = Svn::Core::RangeList.new([4, 9, true])
+    range_list2 = Svn::Core::RangeList.new([4, 5, true],
+                                           [7, 8, true], [9, 13, true])
 
     intersected = range_list1.intersect(range_list2)
-    assert_equal([[5, 5, true], [7, 7, true]],
+    assert_equal([[4, 5, true], [7, 8, true]],
                  intersected.collect {|range| range.to_a})
   end
 
   def test_range_list_reverse
-    range_list = Svn::Core::RangeList.new([5, 5, true],
-                                          [7, 7, true], [9, 13, true])
+    range_list = Svn::Core::RangeList.new([4, 5, true],
+                                          [7, 8, true], [10, 13, true])
 
     reversed = range_list.reverse
-    assert_equal([[13, 9, true], [7, 7, true], [5, 5, true]],
+    assert_equal([[13, 10, true], [8, 7, true], [5, 4, true]],
                  reversed.collect {|range| range.to_a})
   end
 
   def test_range_list_to_s
-    range_list = Svn::Core::RangeList.new([5, 5, true],
-                                          [7, 7, true], [9, 13, true])
+    range_list = Svn::Core::RangeList.new([4, 6, true],
+                                          [6, 8, true], [9, 13, true])
     expectation = "5-6,7-8,10-13"
     assert_equal(expectation, range_list.to_s)
     assert_not_equal(expectation, range_list.inspect)

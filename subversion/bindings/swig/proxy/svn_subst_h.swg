@@ -1,5 +1,6 @@
 /* Proxy classes for svn_subst.h
- * DO NOT EDIT -- AUTOMATICALLY GENERATED */
+ * DO NOT EDIT -- AUTOMATICALLY GENERATED
+ * BY build/generator/swig/header_wrappers.py */
 
 /* No default constructors for opaque structs */
 #ifdef SWIGPYTHON
@@ -8,6 +9,11 @@
 /* Callback typemaps */
 
 /* Baton typemaps */
+#ifdef SWIGPYTHON
+%apply void *PY_AS_VOID {
+  void *cancel_baton
+};
+#endif
 
 /* Includes */
 %{

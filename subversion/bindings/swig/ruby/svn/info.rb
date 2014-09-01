@@ -1,3 +1,22 @@
+# ====================================================================
+#    Licensed to the Apache Software Foundation (ASF) under one
+#    or more contributor license agreements.  See the NOTICE file
+#    distributed with this work for additional information
+#    regarding copyright ownership.  The ASF licenses this file
+#    to you under the Apache License, Version 2.0 (the
+#    "License"); you may not use this file except in compliance
+#    with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing,
+#    software distributed under the License is distributed on an
+#    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#    KIND, either express or implied.  See the License for the
+#    specific language governing permissions and limitations
+#    under the License.
+# ====================================================================
+
 require "English"
 require "time"
 require "digest/sha2"
@@ -7,8 +26,8 @@ require "nkf"
 begin
   require "uconv"
 rescue LoadError
-  module Uconv
-    class Error < StandardError
+  module Uconv #:nodoc:
+    class Error < StandardError #:nodoc:
     end
     def self.u8toeuc(str)
       raise Error
@@ -210,7 +229,9 @@ module Svn
 
     def parse_diff_unified(entry)
       in_content = false
-      entry.body.each do |line|
+      # ruby 1.8 and ruby 1.9 compat
+      each_meth = entry.body.respond_to?(:each_line) ? :each_line : :each
+      entry.body.send(each_meth) do |line|
         case line
         when /^@@/
           in_content = true

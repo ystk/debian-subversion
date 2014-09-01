@@ -1,3 +1,22 @@
+dnl ===================================================================
+dnl   Licensed to the Apache Software Foundation (ASF) under one
+dnl   or more contributor license agreements.  See the NOTICE file
+dnl   distributed with this work for additional information
+dnl   regarding copyright ownership.  The ASF licenses this file
+dnl   to you under the Apache License, Version 2.0 (the
+dnl   "License"); you may not use this file except in compliance
+dnl   with the License.  You may obtain a copy of the License at
+dnl
+dnl     http://www.apache.org/licenses/LICENSE-2.0
+dnl
+dnl   Unless required by applicable law or agreed to in writing,
+dnl   software distributed under the License is distributed on an
+dnl   "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+dnl   KIND, either express or implied.  See the License for the
+dnl   specific language governing permissions and limitations
+dnl   under the License.
+dnl ===================================================================
+dnl
 dnl   SVN_LIB_SQLITE(minimum_ver, recommended_ver, url)
 dnl
 dnl   Search for a suitable version of sqlite.  minimum_ver is a
@@ -59,6 +78,10 @@ AC_DEFUN(SVN_LIB_SQLITE,
     SVN_SQLITE_FILE_CONFIG($abs_srcdir/sqlite-amalgamation/sqlite3.c)
 
     if test -z "$svn_lib_sqlite"; then
+      SVN_SQLITE_FILE_CONFIG($abs_builddir/sqlite-amalgamation/sqlite3.c)
+    fi
+
+    if test -z "$svn_lib_sqlite"; then
       dnl check the "standard" location of /usr
       SVN_SQLITE_DIR_CONFIG()
     fi
@@ -87,7 +110,7 @@ AC_DEFUN(SVN_SQLITE_PKG_CONFIG,
       sqlite_version=`$PKG_CONFIG $SQLITE_PKGNAME --modversion --silence-errors`
 
       if test -n "$sqlite_version"; then
-        SVN_SQLITE_VERNUM_PARSE
+        SVN_SQLITE_VERNUM_PARSE([$sqlite_version], [sqlite_ver_num])
 
         if test "$sqlite_ver_num" -ge "$sqlite_min_ver_num"; then
           AC_MSG_RESULT([$sqlite_version])
@@ -142,7 +165,7 @@ SQLITE_VERSION_OKAY
                         SVN_SQLITE_LIBS="-lsqlite3"
                       else
                         SVN_SQLITE_INCLUDES="-I$sqlite_dir/include"
-                        SVN_SQLITE_LIBS="-L$sqlite_dir/lib -lsqlite3"
+                        SVN_SQLITE_LIBS="`SVN_REMOVE_STANDARD_LIB_DIRS(-L$sqlite_dir/lib -lsqlite3)`"
                       fi
                   ])], [AC_MSG_RESULT([unsupported SQLite version])])
     ])
@@ -158,9 +181,11 @@ dnl at sqlite_file.  If not, fail.
 AC_DEFUN(SVN_SQLITE_FILE_CONFIG,
 [
   sqlite_amalg="$1"
+  AC_MSG_CHECKING([sqlite amalgamation])
   if test ! -e $sqlite_amalg; then
-    echo "amalgamation not found at $sqlite_amalg"
+    AC_MSG_RESULT([no])
   else
+    AC_MSG_RESULT([yes])
     AC_MSG_CHECKING([sqlite amalgamation file version])
     AC_EGREP_CPP(SQLITE_VERSION_OKAY,[
 #include "$sqlite_amalg"
@@ -168,28 +193,36 @@ AC_DEFUN(SVN_SQLITE_FILE_CONFIG,
 SQLITE_VERSION_OKAY
 #endif],
                  [AC_MSG_RESULT([amalgamation found and is okay])
+                  _SVN_SQLITE_DSO_LIBS
                   AC_DEFINE(SVN_SQLITE_INLINE, 1,
                   [Defined if svn should use the amalgamated version of sqlite])
                   SVN_SQLITE_INCLUDES="-I`dirname $sqlite_amalg`"
+                  if test -n "$svn_sqlite_dso_ldflags"; then
+                    SVN_SQLITE_LIBS="$svn_sqlite_dso_ldflags -lpthread"
+                  else
+                    SVN_SQLITE_LIBS="-lpthread"
+                  fi
                   svn_lib_sqlite="yes"],
                  [AC_MSG_RESULT([unsupported amalgamation SQLite version])])
   fi
 ])
 
-dnl SVN_SQLITE_VERNUM_PARSE()
+dnl SVN_SQLITE_VERNUM_PARSE(version_string, result_var)
 dnl
-dnl Parse a x.y[.z] version string sqlite_version into a number sqlite_ver_num.
+dnl Parse a x.y[.z] version string version_string into a number result_var.
 AC_DEFUN(SVN_SQLITE_VERNUM_PARSE,
 [
-  sqlite_major=`expr $sqlite_version : '\([[0-9]]*\)'`
-  sqlite_minor=`expr $sqlite_version : '[[0-9]]*\.\([[0-9]]*\)'`
-  sqlite_micro=`expr $sqlite_version : '[[0-9]]*\.[[0-9]]*\.\([[0-9]]*\)'`
-  if test -z "$sqlite_micro"; then
-    sqlite_micro=0
+  version_string="$1"
+  
+  major=`expr $version_string : '\([[0-9]]*\)'`
+  minor=`expr $version_string : '[[0-9]]*\.\([[0-9]]*\)'`
+  micro=`expr $version_string : '[[0-9]]*\.[[0-9]]*\.\([[0-9]]*\)'`
+  if test -z "$micro"; then
+    micro=0
   fi
-  sqlite_ver_num=`expr $sqlite_major \* 1000000 \
-                    \+ $sqlite_minor \* 1000 \
-                    \+ $sqlite_micro`
+  $2=`expr $major \* 1000000 \
+        \+ $minor \* 1000 \
+        \+ $micro`
 ])
 
 dnl SVN_SQLITE_MIN_VERNUM_PARSE()
@@ -198,12 +231,7 @@ dnl Parse a x.y.z version string SQLITE_MINIMUM_VER into a number
 dnl sqlite_min_ver_num.
 AC_DEFUN(SVN_SQLITE_MIN_VERNUM_PARSE,
 [
-  sqlite_min_major=`expr $SQLITE_MINIMUM_VER : '\([[0-9]]*\)'`
-  sqlite_min_minor=`expr $SQLITE_MINIMUM_VER : '[[0-9]]*\.\([[0-9]]*\)'`
-  sqlite_min_micro=`expr $SQLITE_MINIMUM_VER : '[[0-9]]*\.[[0-9]]*\.\([[0-9]]*\)'`
-  sqlite_min_ver_num=`expr $sqlite_min_major \* 1000000 \
-                        \+ $sqlite_min_minor \* 1000 \
-                        \+ $sqlite_min_micro`
+  SVN_SQLITE_VERNUM_PARSE([$SQLITE_MINIMUM_VER], [sqlite_min_ver_num])
 ])
 
 dnl SVN_DOWNLOAD_SQLITE()
@@ -219,10 +247,60 @@ AC_DEFUN(SVN_DOWNLOAD_SQLITE,
   echo ""
   echo "get the sqlite ${SQLITE_RECOMMENDED_VER} amalgamation from:"
   echo "    ${SQLITE_URL}"
-  echo "unpack the archive using tar/gunzip and copy sqlite3.c from the"
-  echo "resulting directory to:"
-  echo "$abs_srcdir/sqlite-amalgamation/sqlite3.c"
-  echo "This file also ships as part of the subversion-deps distribution."
+  echo "unpack the archive using unzip and rename the resulting"
+  echo "directory to:"
+  echo "$abs_srcdir/sqlite-amalgamation"
+  if test x"$abs_srcdir" != x"$abs_builddir"; then
+    echo "or to:"
+    echo "$abs_builddir/sqlite-amalgamation"
+  fi
   echo ""
   AC_MSG_ERROR([Subversion requires SQLite])
+])
+
+dnl _SVN_SQLITE_DSO_LIBS() dnl Find additional libraries that the
+dnl sqlite amalgamation code should link in order to load
+dnl shared libraries.  Copied from build/libtool.m4
+AC_DEFUN(_SVN_SQLITE_DSO_LIBS,
+[
+  case $host_os in
+  beos* | mingw* | pw32* | cegcc* | cygwin*)
+    svn_sqlite_dso_ldflags=
+    ;;
+
+  darwin*)
+  # if libdl is installed we need to link against it
+    AC_CHECK_LIB([dl], [dlopen],
+                [lt_cv_dlopen="dlopen" svn_sqlite_dso_ldflags="-ldl"],[
+    svn_sqlite_dso_ldflags=
+    ])
+    ;;
+
+  *)
+    AC_CHECK_FUNC([shl_load],
+          [svn_sqlite_dso_ldflags=],
+      [AC_CHECK_LIB([dld], [shl_load],
+            [svn_sqlite_dso_ldflags="-ldld"],
+        [AC_CHECK_FUNC([dlopen],
+              [svn_sqlite_dso_ldflags=],
+          [AC_CHECK_LIB([dl], [dlopen],
+                [svn_sqlite_dso_ldflags="-ldl"],
+            [AC_CHECK_LIB([svld], [dlopen],
+                  [svn_sqlite_dso_ldflags="-lsvld"],
+              [AC_CHECK_LIB([dld], [dld_link],
+                    [svn_sqlite_dso_ldflags="-ldld"])
+              ])
+            ])
+          ])
+        ])
+      ])
+    ;;
+  esac
+
+  AC_MSG_CHECKING([additional libraries for sqlite])
+  if test -n "$svn_sqlite_dso_ldflags"; then
+    AC_MSG_RESULT(${svn_sqlite_dso_ldflags})
+  else
+    AC_MSG_RESULT(none)
+  fi
 ])

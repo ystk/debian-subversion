@@ -1,6 +1,4 @@
-HACKING
 README
-notes/sasl.txt
-notes/webdav-proxy
-notes/svnsync.txt
-debian/svn_1.5_releasenotes.html
+debian/svn_1.6_releasenotes.html
+debian/svn_1.7_releasenotes.html
+debian/svn_1.8_releasenotes.html

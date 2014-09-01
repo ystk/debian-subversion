@@ -2,17 +2,22 @@
  * authz.c: authorization related code
  *
  * ====================================================================
- * Copyright (c) 2000-2006 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -20,7 +25,10 @@
 #include <http_log.h>
 
 #include "svn_pools.h"
+#include "svn_dirent_uri.h"
 #include "svn_path.h"
+
+#include "private/svn_fspath.h"
 
 #include "mod_authz_svn.h"
 #include "dav_svn.h"
@@ -46,7 +54,7 @@ dav_svn__allow_read(request_rec *r,
       return TRUE;
     }
 
-  /* Sometimes we get paths that do not start with '/' and 
+  /* Sometimes we get paths that do not start with '/' and
      hence below uri concatenation would lead to wrong uris .*/
   if (path && path[0] != '/')
     path = apr_pstrcat(pool, "/", path, NULL);
@@ -88,6 +96,43 @@ dav_svn__allow_read(request_rec *r,
   return allowed;
 }
 
+
+svn_boolean_t
+dav_svn__allow_list_repos(request_rec *r,
+                          const char *repos_name,
+                          apr_pool_t *pool)
+{
+  const char *uri;
+  request_rec *subreq;
+  svn_boolean_t allowed = FALSE;
+
+  /* Easy out:  if the admin has explicitly set 'SVNPathAuthz Off',
+     then this whole callback does nothing. */
+  if (! dav_svn__get_pathauthz_flag(r))
+    {
+      return TRUE;
+    }
+
+  /* Do not use short_circuit mode: bypass provider expects R to be request to
+     the repository to find repository relative authorization file. */
+
+  /* Build a Public Resource uri representing repository root. */
+  uri =  svn_urlpath__join(dav_svn__get_root_dir(r),
+                           svn_path_uri_encode(repos_name, pool), pool);
+
+  /* Check if GET would work against this uri. */
+  subreq = ap_sub_req_method_uri("GET", uri, r, r->output_filters);
+
+  if (subreq)
+    {
+      if (subreq->status == HTTP_OK)
+        allowed = TRUE;
+
+      ap_destroy_sub_req(subreq);
+    }
+
+  return allowed;
+}
 
 /* This function implements 'svn_repos_authz_func_t', specifically
    for read authorization.
@@ -138,20 +183,21 @@ authz_read(svn_boolean_t *allowed,
          copied tree.  So we start at path and walk up its parents
          asking if anyone was copied, and if so where from.  */
       while (! (svn_path_is_empty(path_s->data)
-                || ((path_s->len == 1) && (path_s->data[0] == '/'))))
+                || svn_fspath__is_root(path_s->data, path_s->len)))
         {
           SVN_ERR(svn_fs_copied_from(&rev, &revpath, root,
                                      path_s->data, pool));
 
           if (SVN_IS_VALID_REVNUM(rev) && revpath)
             {
-              revpath = svn_path_join(revpath, lopped_path, pool);
+              revpath = svn_fspath__join(revpath, lopped_path, pool);
               break;
             }
 
           /* Lop off the basename and try again. */
-          lopped_path = svn_path_join(svn_path_basename
-                                      (path_s->data, pool), lopped_path, pool);
+          lopped_path = svn_relpath_join(svn_fspath__basename(path_s->data,
+                                                              pool),
+                                         lopped_path, pool);
           svn_path_remove_component(path_s);
         }
 

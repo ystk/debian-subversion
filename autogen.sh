@@ -1,4 +1,24 @@
 #!/bin/sh
+#
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+#
 
 ### Run this to produce everything needed for configuration. ###
 
@@ -100,11 +120,11 @@ fi
 #
 # Note: this dependency on Python is fine: only SVN developers use autogen.sh
 #       and we can state that dev people need Python on their machine. Note
-#       that running gen-make.py requires Python 2.4 or newer.
+#       that running gen-make.py requires Python 2.5 or newer.
 
 PYTHON="`./build/find_python.sh`"
 if test -z "$PYTHON"; then
-  echo "Python 2.4 or later is required to run autogen.sh"
+  echo "Python 2.5 or later is required to run autogen.sh"
   echo "If you have a suitable Python installed, but not on the"
   echo "PATH, set the environment variable PYTHON to the full path"
   echo "to the Python executable, and re-run autogen.sh"
@@ -120,6 +140,9 @@ if test -n "$RELEASE_MODE"; then
 
   # Build the SWIG-related files
   make -f autogen-standalone.mk autogen-swig
+
+  # Remove the .swig_checked file
+  rm -f .swig_checked
 fi
 
 if test -n "$SKIP_DEPS"; then
@@ -179,6 +202,8 @@ echo ""
 echo "./configure --enable-maintainer-mode"
 echo "./configure --disable-shared"
 echo "./configure --enable-maintainer-mode --disable-shared"
+echo "./configure --disable-optimize --enable-debug"
+echo "./configure CUSERFLAGS='--flags-for-C' CXXUSERFLAGS='--flags-for-C++'"
 echo ""
 echo "Note:  If you wish to run a Subversion HTTP server, you will need"
 echo "Apache 2.x.  See the INSTALL file for details."

@@ -1,16 +1,21 @@
 /*
  * ====================================================================
- * Copyright (c) 2000-2007, 2009 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  *
  * core.i: SWIG module interface file for libsvn_subr, a few pieces of
@@ -218,6 +223,14 @@
 %ignore svn_path_cstring_from_utf8;
 %ignore svn_path_cstring_to_utf8;
 
+/* svn_dirent_uri.h: SWIG can't digest these functions yet, so ignore them
+ * for now. TODO: make them work.
+ */
+%ignore svn_dirent_join_many;
+%ignore svn_dirent_condense_targets;
+%ignore svn_uri_condense_targets;
+%ignore svn_dirent_is_under_root;
+
 /* Other files */
 
 /* Ignore platform-specific auth functions */
@@ -231,11 +244,36 @@
 %ignore svn_auth_kwallet_version;
 %ignore svn_auth_get_kwallet_simple_provider;
 %ignore svn_auth_get_kwallet_ssl_client_cert_pw_provider;
+%ignore svn_auth_get_gpg_agent_simple_provider;
 
 /* bad pool convention */
 %ignore svn_opt_print_generic_help;
 
 %ignore svn_opt_args_to_target_array;
+
+/* svn_cmdline.h */
+%ignore svn_cmdline_auth_plaintext_passphrase_prompt;
+%ignore svn_cmdline_auth_plaintext_prompt;
+%ignore svn_cmdline_auth_simple_prompt;
+%ignore svn_cmdline_auth_ssl_client_cert_prompt;
+%ignore svn_cmdline_auth_ssl_client_cert_pw_prompt;
+%ignore svn_cmdline_auth_ssl_server_trust_prompt;
+%ignore svn_cmdline_auth_username_prompt;
+%ignore svn_cmdline_cstring_from_utf8;
+%ignore svn_cmdline_cstring_from_utf8_fuzzy;
+%ignore svn_cmdline_cstring_to_utf8;
+%ignore svn_cmdline_fflush;
+%ignore svn_cmdline_fprintf;
+%ignore svn_cmdline_fputs;
+%ignore svn_cmdline_handle_exit_error;
+%ignore svn_cmdline_output_encoding;
+%ignore svn_cmdline_path_local_style_from_utf8;
+%ignore svn_cmdline_printf;
+%ignore svn_cmdline_prompt_baton2_t;
+%ignore svn_cmdline_prompt_baton_t;
+%ignore svn_cmdline_prompt_user2;
+%ignore svn_cmdline_prompt_user;
+%ignore svn_cmdline_setup_auth_baton;
 
 /* Ugliness because the constants are typedefed and SWIG ignores them
    as a result. */
@@ -245,34 +283,34 @@
 /* -----------------------------------------------------------------------
    input rangelist
 */
-%apply apr_array_header_t *RANGELIST {
-  apr_array_header_t *rangeinput,
-  const apr_array_header_t *rangelist,
-  apr_array_header_t *from,
-  apr_array_header_t *to,
-  apr_array_header_t *changes,
-  apr_array_header_t *eraser,
-  apr_array_header_t *whiteboard,
-  apr_array_header_t *rangelist1,
-  apr_array_header_t *rangelist2
+%apply svn_rangelist_t *RANGELIST {
+  svn_rangelist_t *rangeinput,
+  const svn_rangelist_t *rangelist,
+  svn_rangelist_t *from,
+  svn_rangelist_t *to,
+  svn_rangelist_t *changes,
+  svn_rangelist_t *eraser,
+  svn_rangelist_t *whiteboard,
+  svn_rangelist_t *rangelist1,
+  svn_rangelist_t *rangelist2
 }
 
 /* -----------------------------------------------------------------------
    output rangelist
 */
-%apply apr_array_header_t **RANGELIST {
-  apr_array_header_t **rangelist,
-  apr_array_header_t **inheritable_rangelist,
-  apr_array_header_t **deleted,
-  apr_array_header_t **added,
-  apr_array_header_t **output
+%apply svn_rangelist_t **RANGELIST {
+  svn_rangelist_t **rangelist,
+  svn_rangelist_t **inheritable_rangelist,
+  svn_rangelist_t **deleted,
+  svn_rangelist_t **added,
+  svn_rangelist_t **output
 }
 
 /* -----------------------------------------------------------------------
    input and output rangelist
 */
-%apply apr_array_header_t **RANGELIST_INOUT {
-  apr_array_header_t **rangelist_inout
+%apply svn_rangelist_t **RANGELIST_INOUT {
+  svn_rangelist_t **rangelist_inout
 }
 
 /* -----------------------------------------------------------------------
@@ -317,19 +355,22 @@
 };
 #endif
 
-
 /* -----------------------------------------------------------------------
-   handle the default value of svn_config_get().and the
-   config directory of svn_config_read_auth_data() and
-   svn_config_write_auth_data().
+   allowable null values
 */
 %apply const char *MAY_BE_NULL {
+    /* svn_config_get */
     const char *default_value,
-    const char *config_dir,
+    /* svn_config_read_auth_data */
+    const char *config_dir, 
+    /* svn_diff_file_output_merge */
     const char *conflict_original,
     const char *conflict_modified,
     const char *conflict_latest,
-    const char *conflict_separator
+    const char *conflict_separator,
+    /* svn_cmdline_create_auth_baton */
+    const char *username,
+    const char *password
 };
 
 /* -----------------------------------------------------------------------
@@ -337,12 +378,17 @@
 */
 #ifdef SWIGPYTHON
 %typemap(in) (char *buffer, apr_size_t *len) ($*2_type temp) {
-    if (!PyInt_Check($input)) {
+    if (PyLong_Check($input)) {
+        temp = PyLong_AsLong($input);
+    }
+    else if (PyInt_Check($input)) {
+        temp = PyInt_AsLong($input);
+    }
+    else {
         PyErr_SetString(PyExc_TypeError,
                         "expecting an integer for the buffer size");
         SWIG_fail;
     }
-    temp = PyInt_AsLong($input);
     if (temp < 0) {
         PyErr_SetString(PyExc_ValueError,
                         "buffer size must be a positive integer");
@@ -579,6 +625,10 @@ apr_status_t apr_file_open_stderr (apr_file_t **out, apr_pool_t *pool);
 */
 typedef int apr_status_t;
 
+/* Make possible to parse the SVN_VER_NUM definition. */
+#define APR_STRINGIFY_HELPER(n) #n
+#define APR_STRINGIFY(n) APR_STRINGIFY_HELPER(n)
+
 /* -----------------------------------------------------------------------
    pool functions renaming since swig doesn't take care of the #define's
 */
@@ -635,14 +685,14 @@ svn_swig_pl_set_current_pool (apr_pool_t *pool)
                   )
 #endif
 
-#ifdef SWIGRUBY
+#ifndef SWIGPERL
 %callback_typemap(svn_config_enumerator2_t callback, void *baton,
-                  ,
+                  svn_swig_py_config_enumerator2,
                   ,
                   svn_swig_rb_config_enumerator)
 
 %callback_typemap(svn_config_section_enumerator2_t callback, void *baton,
-                  ,
+                  svn_swig_py_config_section_enumerator2,
                   ,
                   svn_swig_rb_config_section_enumerator)
 #endif
@@ -680,6 +730,16 @@ svn_swig_pl_set_current_pool (apr_pool_t *pool)
 %authprompt_callback_typemap(ssl_server_trust)
 %authprompt_callback_typemap(ssl_client_cert)
 %authprompt_callback_typemap(ssl_client_cert_pw)
+%authprompt_callback_typemap(gnome_keyring_unlock)
+
+#ifdef SWIGPYTHON
+/* pl and rb aren't yet implemented */
+%callback_typemap_maybenull(svn_config_auth_walk_func_t walk_func,
+                            void *walk_baton,
+                            svn_swig_py_config_auth_walk_func,
+                            svn_swig_pl_config_auth_walk_func,
+                            svn_swig_rb_config_auth_walk_func)
+#endif
 
 /* -----------------------------------------------------------------------
  * For all the various functions that set a callback baton create a reference
@@ -728,6 +788,16 @@ svn_swig_pl_set_current_pool (apr_pool_t *pool)
 %ignore svn_opt_parse_all_args;
 #endif
 
+#ifdef SWIGPYTHON
+# The auth baton depends on the providers, so we preserve a
+# reference to them inside the wrapper. This way, if all external
+# references to the providers are gone, they will still be alive,
+# keeping the baton valid.
+%feature("pythonappend") svn_auth_open %{
+  val.__dict__["_deps"] = list(args[0])
+%}
+#endif
+
 /* ----------------------------------------------------------------------- */
 
 %include svn_error_codes_h.swg
@@ -744,19 +814,52 @@ svn_swig_pl_set_current_pool (apr_pool_t *pool)
 #pragma SWIG nowarn=+305
 
 %include svn_opt_h.swg
+%include svn_cmdline_h.swg
 %include svn_auth_h.swg
 %include svn_config_h.swg
 %include svn_utf_h.swg
 %include svn_nls_h.swg
 %include svn_path_h.swg
+%include svn_dirent_uri_h.swg
 %include svn_mergeinfo_h.swg
 %include svn_io_h.swg
+%include svn_checksum_h.swg
+
+
+
+%inline %{
+/* Helper function to set the gnome-keyring unlock prompt function. This
+ * C function accepts an auth baton, a function and a prompt baton, but
+ * the below callback_typemap uses both the function and the prompt
+ * baton, so the resulting binding has just two arguments: The auth
+ * baton and the prompt function.
+ * The prompt function should again have two arguments: The keyring name
+ * (string) and a pool (except for the ruby version, which doesn't have
+ * the pool argument). It should return the entered password (string).
+ * This binding generated for this function generates a reference to the
+ * prompt function that was passed into this. The caller should store
+ * that reference somewhere, to prevent the function from being garbage
+ * collected...
+ */
+static void svn_auth_set_gnome_keyring_unlock_prompt_func(svn_auth_baton_t *ab,
+                                                          svn_auth_gnome_keyring_unlock_prompt_func_t prompt_func,
+                                                          void *prompt_baton) {
+    svn_auth_set_parameter(ab, SVN_AUTH_PARAM_GNOME_KEYRING_UNLOCK_PROMPT_FUNC,
+                           prompt_func);
+    svn_auth_set_parameter(ab, SVN_AUTH_PARAM_GNOME_KEYRING_UNLOCK_PROMPT_BATON,
+                           prompt_baton);
+}
+%}
 
 #if defined(SWIGPERL) || defined(SWIGRUBY)
 %include svn_md5_h.swg
 #endif
 
 #ifdef SWIGPERL
+/* The apr_file_t* 'in' typemap can't cope with struct members, and there
+   is no reason to change this one. */
+%immutable svn_patch_t::patch_file;
+
 %include svn_diff_h.swg
 %include svn_error_h.swg
 
@@ -791,10 +894,6 @@ svn_swig_py_initialize();
 #ifdef SWIGRUBY
 %init %{
   svn_swig_rb_initialize();
-
-  rb_define_const(mCore, "SVN_VER_NUM", rb_str_new2(SVN_VER_NUM));
-  rb_define_const(mCore, "SVN_VER_NUMBER", rb_str_new2(SVN_VER_NUMBER));
-  rb_define_const(mCore, "SVN_VERSION", rb_str_new2(SVN_VERSION));
 
   rb_define_const(mCore, "SVN_ALLOCATOR_MAX_FREE_UNLIMITED",
                   UINT2NUM(APR_ALLOCATOR_MAX_FREE_UNLIMITED));
@@ -1082,15 +1181,15 @@ svn_swig_mergeinfo_sort(apr_hash_t **mergeinfo_inout, apr_pool_t *pool)
 }
 
 static svn_error_t *
-svn_swig_rangelist_merge(apr_array_header_t **rangelist_inout,
-                         apr_array_header_t *changes,
+svn_swig_rangelist_merge(svn_rangelist_t **rangelist_inout,
+                         svn_rangelist_t *changes,
                          apr_pool_t *pool)
 {
   return svn_rangelist_merge(rangelist_inout, changes, pool);
 }
 
 static svn_error_t *
-svn_swig_rangelist_reverse(apr_array_header_t **rangelist_inout,
+svn_swig_rangelist_reverse(svn_rangelist_t **rangelist_inout,
                            apr_pool_t *pool)
 {
   return svn_rangelist_reverse(*rangelist_inout, pool);

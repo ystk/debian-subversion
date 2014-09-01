@@ -2,23 +2,29 @@
  * delta.c:   an editor driver for expressing differences between two trees
  *
  * ====================================================================
- * Copyright (c) 2000-2006 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
 
 #include <apr_hash.h>
 
+#include "svn_hash.h"
 #include "svn_types.h"
 #include "svn_delta.h"
 #include "svn_fs.h"
@@ -228,11 +234,15 @@ svn_repos_dir_delta2(svn_fs_root_t *src_root,
   const char *authz_root_path;
 
   /* SRC_PARENT_DIR must be valid. */
-  if (! src_parent_dir)
+  if (src_parent_dir)
+    src_parent_dir = svn_relpath_canonicalize(src_parent_dir, pool);
+  else
     return not_a_dir_error("source parent", src_parent_dir);
 
   /* TGT_FULLPATH must be valid. */
-  if (! tgt_fullpath)
+  if (tgt_fullpath)
+    tgt_fullpath = svn_relpath_canonicalize(tgt_fullpath, pool);
+  else
     return svn_error_create(SVN_ERR_FS_PATH_SYNTAX, 0,
                             _("Invalid target path"));
 
@@ -243,12 +253,12 @@ svn_repos_dir_delta2(svn_fs_root_t *src_root,
   /* Calculate the fs path implicitly used for editor->open_root, so
      we can do an authz check on that path first. */
   if (*src_entry)
-    authz_root_path = svn_path_dirname(tgt_fullpath, pool);
+    authz_root_path = svn_relpath_dirname(tgt_fullpath, pool);
   else
     authz_root_path = tgt_fullpath;
 
   /* Construct the full path of the source item. */
-  src_fullpath = svn_path_join(src_parent_dir, src_entry, pool);
+  src_fullpath = svn_relpath_join(src_parent_dir, src_entry, pool);
 
   /* Get the node kinds for the source and target paths.  */
   SVN_ERR(svn_fs_check_path(&tgt_kind, tgt_root, tgt_fullpath, pool));
@@ -497,8 +507,7 @@ delta_proplists(struct context *c,
                                            pool));
 
           /* Transmit the committed-date. */
-          committed_date = apr_hash_get(r_props, SVN_PROP_REVISION_DATE,
-                                        APR_HASH_KEY_STRING);
+          committed_date = svn_hash_gets(r_props, SVN_PROP_REVISION_DATE);
           if (committed_date || source_path)
             {
               SVN_ERR(change_fn(c, object, SVN_PROP_ENTRY_COMMITTED_DATE,
@@ -506,8 +515,7 @@ delta_proplists(struct context *c,
             }
 
           /* Transmit the last-author. */
-          last_author = apr_hash_get(r_props, SVN_PROP_REVISION_AUTHOR,
-                                     APR_HASH_KEY_STRING);
+          last_author = svn_hash_gets(r_props, SVN_PROP_REVISION_AUTHOR);
           if (last_author || source_path)
             {
               SVN_ERR(change_fn(c, object, SVN_PROP_ENTRY_LAST_AUTHOR,
@@ -611,8 +619,7 @@ svn_repos__compare_files(svn_boolean_t *changed_p,
   svn_filesize_t size1, size2;
   svn_checksum_t *checksum1, *checksum2;
   svn_stream_t *stream1, *stream2;
-  char *buf1, *buf2;
-  apr_size_t len1, len2;
+  svn_boolean_t same;
 
   /* If the filesystem claims the things haven't changed, then they
      haven't changed. */
@@ -621,12 +628,23 @@ svn_repos__compare_files(svn_boolean_t *changed_p,
   if (!*changed_p)
     return SVN_NO_ERROR;
 
-  /* From this point on, assume things haven't changed. */
+  /* If the SHA1 checksums match for these things, we'll claim they
+     have the same contents.  (We don't give quite as much weight to
+     MD5 checksums.)  */
+  SVN_ERR(svn_fs_file_checksum(&checksum1, svn_checksum_sha1,
+                               root1, path1, FALSE, pool));
+  SVN_ERR(svn_fs_file_checksum(&checksum2, svn_checksum_sha1,
+                               root2, path2, FALSE, pool));
+  if (checksum1 && checksum2)
+    {
+      *changed_p = !svn_checksum_match(checksum1, checksum2);
+      return SVN_NO_ERROR;
+    }
+
+  /* From this point on, our default answer is "Nothing's changed". */
   *changed_p = FALSE;
 
-  /* So, things have changed.  But we need to know if the two sets of
-     file contents are actually different.  If they have differing
-     sizes, then we know they differ. */
+  /* Different filesizes means the contents are different. */
   SVN_ERR(svn_fs_file_length(&size1, root1, path1, pool));
   SVN_ERR(svn_fs_file_length(&size2, root2, path2, pool));
   if (size1 != size2)
@@ -635,8 +653,7 @@ svn_repos__compare_files(svn_boolean_t *changed_p,
       return SVN_NO_ERROR;
     }
 
-  /* Same sizes, huh?  Well, if their checksums differ, we know they
-     differ. */
+  /* Different MD5 checksums means the contents are different. */
   SVN_ERR(svn_fs_file_checksum(&checksum1, svn_checksum_md5, root1, path1,
                                FALSE, pool));
   SVN_ERR(svn_fs_file_checksum(&checksum2, svn_checksum_md5, root2, path2,
@@ -647,26 +664,12 @@ svn_repos__compare_files(svn_boolean_t *changed_p,
       return SVN_NO_ERROR;
     }
 
-  /* Same sizes, same checksums.  Chances are reallllly good that they
-     don't differ, but to be absolute sure, we need to compare bytes. */
+  /* And finally, different contents means the ... uh ... contents are
+     different. */
   SVN_ERR(svn_fs_file_contents(&stream1, root1, path1, pool));
   SVN_ERR(svn_fs_file_contents(&stream2, root2, path2, pool));
-
-  buf1 = apr_palloc(pool, SVN__STREAM_CHUNK_SIZE);
-  buf2 = apr_palloc(pool, SVN__STREAM_CHUNK_SIZE);
-  do
-    {
-      len1 = len2 = SVN__STREAM_CHUNK_SIZE;
-      SVN_ERR(svn_stream_read(stream1, buf1, &len1));
-      SVN_ERR(svn_stream_read(stream2, buf2, &len2));
-
-      if (len1 != len2 || memcmp(buf1, buf2, len1))
-        {
-          *changed_p = TRUE;
-          return SVN_NO_ERROR;
-        }
-    }
-  while (len1 > 0);
+  SVN_ERR(svn_stream_contents_same2(&same, stream1, stream2, pool));
+  *changed_p = !same;
 
   return SVN_NO_ERROR;
 }
@@ -966,17 +969,16 @@ delta_dirs(struct context *c,
       apr_hash_this(hi, &key, &klen, &val);
       t_entry = val;
       tgt_kind = t_entry->kind;
-      t_fullpath = svn_path_join(target_path, t_entry->name, subpool);
-      e_fullpath = svn_path_join(edit_path, t_entry->name, subpool);
+      t_fullpath = svn_relpath_join(target_path, t_entry->name, subpool);
+      e_fullpath = svn_relpath_join(edit_path, t_entry->name, subpool);
 
       /* Can we find something with the same name in the source
          entries hash? */
       if (s_entries && ((s_entry = apr_hash_get(s_entries, key, klen)) != 0))
         {
-          int distance;
           svn_node_kind_t src_kind;
 
-          s_fullpath = svn_path_join(source_path, t_entry->name, subpool);
+          s_fullpath = svn_relpath_join(source_path, t_entry->name, subpool);
           src_kind = s_entry->kind;
 
           if (depth == svn_depth_infinity
@@ -992,7 +994,7 @@ delta_dirs(struct context *c,
                        old one and add the new one.
                     1: means the nodes are related through ancestry, so go
                        ahead and do the replace directly.  */
-              distance = svn_fs_compare_ids(s_entry->id, t_entry->id);
+              int distance = svn_fs_compare_ids(s_entry->id, t_entry->id);
               if (distance == 0)
                 {
                   /* no-op */
@@ -1017,7 +1019,7 @@ delta_dirs(struct context *c,
             }
 
           /*  Remove the entry from the source_hash. */
-          apr_hash_set(s_entries, key, APR_HASH_KEY_STRING, NULL);
+          svn_hash_sets(s_entries, key, NULL);
         }
       else
         {
@@ -1052,7 +1054,7 @@ delta_dirs(struct context *c,
           apr_hash_this(hi, NULL, NULL, &val);
           s_entry = val;
           src_kind = s_entry->kind;
-          e_fullpath = svn_path_join(edit_path, s_entry->name, subpool);
+          e_fullpath = svn_relpath_join(edit_path, s_entry->name, subpool);
 
           /* Do we actually want to delete the dir if we're non-recursive? */
           if (depth == svn_depth_infinity

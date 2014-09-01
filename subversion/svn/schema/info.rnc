@@ -1,3 +1,21 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+#
 # XML RELAX NG schema for Subversion command-line client output
 # For "svn info"
 
@@ -9,8 +27,8 @@ info = element info { entry* }
 
 entry =
   element entry {
-    attlist.entry, url?, repository?, wc-info?, commit?, conflict?, lock?,
-    tree-conflict?
+    attlist.entry, url?, relative-url?, repository?, wc-info?,
+    commit?, conflict?, lock?, tree-conflict?
   }
 attlist.entry &=
   ## Local path.
@@ -22,6 +40,9 @@ attlist.entry &=
 
 ## URL of this item in the repository.
 url = element url { xsd:anyURI }
+
+## Repository relative URL (^/...) of this item in the repository.
+relative-url = element relative-url { string }
 
 ## Information of this item's repository.
 repository = element repository { root?, uuid? }
@@ -35,6 +56,7 @@ uuid = element uuid { uuid.type }
 ## Info in the working copy entry.
 wc-info =
   element wc-info {
+    wcroot-abspath?,
     schedule?,
     changelist?,
     copy-from-url?,
@@ -42,8 +64,12 @@ wc-info =
     depth?,
     text-updated?,
     prop-updated?,
-    checksum?
+    checksum?,
+    moved-from?,
+    moved-to?
   }
+
+wcroot-abspath = element wcroot-abspath { string }
 
 schedule =
   element schedule { "normal" | "add" | "delete" | "replace" | "none" }
@@ -62,6 +88,10 @@ text-updated = element text-updated { xsd:dateTime }
 prop-updated = element prop-updated { xsd:dateTime }
 
 checksum = element checksum { md5sum.type }
+
+moved-from = element moved-from { string }
+
+moved-to = element moved-to { string }
 
 conflict =
   element conflict {
@@ -97,7 +127,8 @@ attlist.tree-conflict &=
   ## Operation causing the tree conflict.
   attribute operation { "update" | "merge" | "switch" },
   ## Operation's action on the victim.
-  attribute action { "edit" | "add" | "delete" },
+  attribute action { "edit" | "add" | "delete" | "replace" },
   ## Local reason for the conflict.
   attribute reason { "edit" | "obstruction" | "delete" | "add" |
-                     "missing" | "unversioned" }
+                     "missing" | "unversioned" | "replace" |
+                     "moved-away" | "moved-here" }

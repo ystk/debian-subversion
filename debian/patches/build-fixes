@@ -1,6 +1,11 @@
+Fix some build problems:
+
+- SWIG out-of-tree stuff
+- Add aprutil as a direct dependency for libsvn_client and libsvn_ra.
+
 --- a/build/generator/swig/checkout_swig_header.py
 +++ b/build/generator/swig/checkout_swig_header.py
-@@ -20,15 +20,14 @@ class Generator(generator.swig.Generator
+@@ -40,15 +40,14 @@
  
    def write_makefile_rules(self, makefile):
      """Write makefile rules to checkout files"""
@@ -22,7 +27,18 @@
                     % " ".join(checkout_locations))
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -249,14 +249,14 @@ INSTALL_EXTRA_SWIG_PY=\
+@@ -113,8 +113,8 @@
+ 
+ SHELL = @SHELL@
+ LIBTOOL = @SVN_LIBTOOL@
+-LTFLAGS = --tag=CC --silent
+-LTCXXFLAGS = --tag=CXX --silent
++LTFLAGS = --tag=CC
++LTCXXFLAGS = --tag=CXX
+ LT_CFLAGS = @LT_CFLAGS@
+ LT_LDFLAGS = @LT_LDFLAGS@
+ LT_SO_VERSION = @SVN_LT_SOVERSION@
+@@ -315,14 +315,14 @@
  
  # The path to generated and complementary source files for the SWIG
  # bindings.
@@ -42,15 +58,7 @@
  
  ### Automate JAR creation using Makefile generator's javahl-java.jar
  ### property.  Enhance generator to support JAR installation.
-@@ -537,6 +537,7 @@ doc: doc-misc-docs doc-api doc-javahl
- # Generate API documentation for the C libraries.
- ### This could also generate POD for swig-perl, etc.
- doc-api:
-+	[ -d doc ] || $(MKDIR) doc
- 	( cd $(top_srcdir) && \
- 	  sed "s,\(OUTPUT_DIRECTORY *= *\),\1$(abs_builddir)/," \
- 	  doc/doxygen.conf | doxygen - )
-@@ -716,8 +717,7 @@ clean-swig-pl:
+@@ -811,8 +811,7 @@
  	fi
  	for d in $(SWIG_PL_DIR)/libsvn_swig_perl; \
  	do \
@@ -60,7 +68,7 @@
  	done
  	if [ -f "$(SWIG_PL_DIR)/native/Makefile" ]; then \
  	  cd $(SWIG_PL_DIR)/native; $(MAKE) clean; \
-@@ -750,7 +750,7 @@ clean-swig-py:
+@@ -846,7 +845,7 @@
  	fi
  	for d in $(SWIG_PY_DIR) $(SWIG_PY_DIR)/libsvn_swig_py; \
  	do \
@@ -69,7 +77,7 @@
  	done
  	find $(SWIG_PY_SRC_DIR) $(SWIG_PY_DIR) -name "*.pyc" -exec rm {} ';'
  
-@@ -774,8 +774,7 @@ clean-swig-rb:
+@@ -876,8 +875,7 @@
  	fi
  	for d in $(SWIG_RB_DIR) $(SWIG_RB_DIR)/libsvn_swig_ruby; \
  	do \
@@ -79,51 +87,21 @@
  	done
  
  extraclean-swig-rb: clean-swig-rb
---- a/build/generator/gen_make.py
-+++ b/build/generator/gen_make.py
-@@ -183,9 +183,9 @@ class Generator(gen_base.GeneratorBase):
-       source_dir = build_path_dirname(source)
-       opts = self.swig.opts[objname.lang]
-       if not self.release_mode:
--        self.ofile.write('%s: %s\n' % (objname, deps) +
--          '\t$(SWIG) $(SWIG_INCLUDES) %s ' % opts +
--          '-o $@ $(top_srcdir)/%s\n' % source
-+        self.ofile.write('$(top_srcdir)/%s:' % objname +
-+                         ' $(top_srcdir)/%s %s\n' % (source, deps) +
-+          '\t$(SWIG) $(SWIG_INCLUDES) %s -o $@ $<\n' % opts
-         )
- 
-     self.ofile.write('\n')
-@@ -456,11 +456,11 @@ class Generator(gen_base.GeneratorBase):
-       self.ofile.write('%s: %s\n' % (objname, deps))
-       cmd = objname.compile_cmd
-       if cmd:
--        if not getattr(objname, 'source_generated', 0):
-+#        if not getattr(objname, 'source_generated', 0):
-           self.ofile.write('\t%s %s\n\n'
-                            % (cmd, '$(canonicalized_srcdir)' + str(sources[0])))
--        else:
--          self.ofile.write('\t%s %s\n\n' % (cmd, sources[0]))
-+#        else:
-+#          self.ofile.write('\t%s %s\n\n' % (cmd, sources[0]))
-       else:
-         self.ofile.write('\n')
- 
 --- a/build/generator/gen_base.py
 +++ b/build/generator/gen_base.py
-@@ -284,7 +284,8 @@ class SourceFile(DependencyNode):
+@@ -340,7 +340,8 @@
  
  class SWIGSource(SourceFile):
    def __init__(self, filename):
 -    SourceFile.__init__(self, filename, build_path_dirname(filename))
 +    SourceFile.__init__(self, filename,
 +                        build_path_dirname('$(top_srcdir)/' + filename))
-   pass
+ 
  
  lang_abbrev = {
 --- a/build/generator/swig/header_wrappers.py
 +++ b/build/generator/swig/header_wrappers.py
-@@ -32,7 +32,7 @@ class Generator(generator.swig.Generator
+@@ -52,7 +52,7 @@
      """Write makefile rules for generating SWIG wrappers for Subversion
      header files."""
      wrapper_fnames = []
@@ -134,39 +112,73 @@
      for fname in self.includes:
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1010,6 +1010,11 @@ SVN_CONFIG_SCRIPT(packages/solaris/pkgin
- AC_SUBST(SVN_CONFIG_SCRIPT_FILES)
+@@ -688,6 +688,7 @@
+ fi
+ 
+ AH_BOTTOM([
++#undef /* */ _
+ /* Indicate to translators that string X should be translated.  Do not look
+    up the translation at run time; just expand to X.  This macro is suitable
+    for use where a constant string is required at compile time. */
+@@ -1504,6 +1505,11 @@
+                    [Defined to the config.guess name of the build target])
  
  AC_OUTPUT
 +if test "$abs_srcdir" != "$abs_builddir"
 +then
 +  AC_MSG_NOTICE([Creating build directories])
-+  (cd "$abs_srcdir"; find subversion tools contrib -type d) | xargs $MKDIR
++  (cd "$abs_srcdir"; find subversion tools -type d) | xargs $MKDIR
 +fi
  
  # ==== Print final messages to user ==========================================
  
 --- a/build.conf
 +++ b/build.conf
-@@ -648,13 +648,14 @@ libs = libsvn_test libsvn_repos libsvn_f
- # ----------------------------------------------------------------------------
- # Tests for libsvn_subr
+@@ -213,7 +213,7 @@
+ description = Subversion Client Library
+ type = lib
+ path = subversion/libsvn_client
+-libs = libsvn_wc libsvn_ra libsvn_delta libsvn_diff libsvn_subr apriconv apr
++libs = libsvn_wc libsvn_ra libsvn_delta libsvn_diff libsvn_subr aprutil apriconv apr
+ install = lib
+ msvc-export = svn_client.h private/svn_client_private.h
  
--[auth-test]
--description = Test platform-specific auth provider access
--type = exe
--path = subversion/tests/libsvn_subr
--sources = auth-test.c
--install = test
--libs = libsvn_test libsvn_subr
-+# Fails because it assumes gnome-keyring facilities are available at test time
-+#[auth-test]
-+#description = Test platform-specific auth provider access
-+#type = exe
-+#path = subversion/tests/libsvn_subr
-+#sources = auth-test.c
-+#install = test
-+#libs = libsvn_test libsvn_subr
+@@ -276,7 +276,7 @@
+ description = Subversion Repository Access Library
+ type = lib
+ path = subversion/libsvn_ra
+-libs = libsvn_delta libsvn_subr ra-libs apriconv apr
++libs = libsvn_delta libsvn_subr ra-libs aprutil apriconv apr
+ # conditionally add more dependencies
+ add-deps = $(SVN_RA_LIB_DEPS)
+ add-install-deps = $(SVN_RA_LIB_INSTALL_DEPS)
+--- a/subversion/libsvn_ra_serf/update.c
++++ b/subversion/libsvn_ra_serf/update.c
+@@ -3064,12 +3064,6 @@
+         SVN_ERR(svn_ra_serf__process_pending(parser_ctx,
+                                              &report->report_received,
+                                              iterpool_inner));
+-
+-      /* Debugging purposes only! */
+-      for (i = 0; i < sess->num_conns; i++)
+-        {
+-          serf_debug__closed_conn(sess->conns[i]->bkt_alloc);
+-        }
+     }
  
- [cache-test]
- description = Test in-memory cache
+   /* If we got a complete report, close the edit.  Otherwise, abort it. */
+--- a/subversion/libsvn_ra_serf/util.c
++++ b/subversion/libsvn_ra_serf/util.c
+@@ -962,12 +962,6 @@
+ 
+           return svn_ra_serf__wrap_err(status, _("Error running context"));
+         }
+-
+-      /* Debugging purposes only! */
+-      for (i = 0; i < sess->num_conns; i++)
+-        {
+-          serf_debug__closed_conn(sess->conns[i]->bkt_alloc);
+-        }
+     }
+   svn_pool_destroy(iterpool);
+ 

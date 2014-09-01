@@ -2,17 +2,22 @@
  * ra_svn.h :  private declarations for the ra_svn module
  *
  * ====================================================================
- * Copyright (c) 2000-2007 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -30,6 +35,8 @@ extern "C" {
 #include <apr_thread_proc.h>
 #include "svn_ra.h"
 #include "svn_ra_svn.h"
+
+#include "private/svn_ra_svn_private.h"
 
 /* Callback function that indicates if a svn_ra_svn__stream_t has pending
  * data.
@@ -51,9 +58,14 @@ typedef svn_error_t *(*ra_svn_block_handler_t)(svn_ra_svn_conn_t *conn,
                                                apr_pool_t *pool,
                                                void *baton);
 
+/* The default "user agent". */
+#define SVN_RA_SVN__DEFAULT_USERAGENT  "SVN/" SVN_VER_NUMBER\
+                                       " (" SVN_BUILD_TARGET ")"
+
 /* The size of our per-connection read and write buffers. */
-#define SVN_RA_SVN__READBUF_SIZE 4096
-#define SVN_RA_SVN__WRITEBUF_SIZE 4096
+#define SVN_RA_SVN__PAGE_SIZE 4096
+#define SVN_RA_SVN__READBUF_SIZE (4 * SVN_RA_SVN__PAGE_SIZE)
+#define SVN_RA_SVN__WRITEBUF_SIZE (4 * SVN_RA_SVN__PAGE_SIZE)
 
 /* Create forward reference */
 typedef struct svn_ra_svn__session_baton_t svn_ra_svn__session_baton_t;
@@ -61,6 +73,14 @@ typedef struct svn_ra_svn__session_baton_t svn_ra_svn__session_baton_t;
 /* This structure is opaque to the server.  The client pokes at the
  * first few fields during setup and cleanup. */
 struct svn_ra_svn_conn_st {
+
+  /* I/O buffers */
+  char write_buf[SVN_RA_SVN__WRITEBUF_SIZE];
+  char read_buf[SVN_RA_SVN__READBUF_SIZE];
+  char *read_ptr;
+  char *read_end;
+  apr_size_t write_pos;
+
   svn_ra_svn__stream_t *stream;
   svn_ra_svn__session_baton_t *session;
 #ifdef SVN_HAVE_SASL
@@ -70,17 +90,32 @@ struct svn_ra_svn_conn_st {
   apr_socket_t *sock;
   svn_boolean_t encrypted;
 #endif
-  char read_buf[SVN_RA_SVN__READBUF_SIZE];
-  char *read_ptr;
-  char *read_end;
-  char write_buf[SVN_RA_SVN__WRITEBUF_SIZE];
-  int write_pos;
+
+  /* abortion check control */
+  apr_size_t written_since_error_check;
+  apr_size_t error_check_interval;
+  svn_boolean_t may_check_for_error;
+
+  /* repository info */
   const char *uuid;
   const char *repos_root;
+
+  /* TX block notification target */
   ra_svn_block_handler_t block_handler;
   void *block_baton;
+
+  /* server settings */
   apr_hash_t *capabilities;
+  int compression_level;
+  apr_size_t zero_copy_limit;
+
+  /* who's on the other side of the connection? */
   char *remote_ip;
+
+  /* EV2 support*/
+  svn_delta_shim_callbacks_t *shim_callbacks;
+
+  /* our pool */
   apr_pool_t *pool;
 };
 
@@ -97,6 +132,7 @@ struct svn_ra_svn__session_baton_t {
   void *callbacks_baton;
   apr_off_t bytes_read, bytes_written; /* apr_off_t's because that's what
                                           the callback interface uses */
+  const char *useragent;
 };
 
 /* Set a callback for blocked writes on conn.  This handler may
@@ -126,7 +162,7 @@ svn_error_t *svn_ra_svn__locate_real_error_child(svn_error_t *err);
  * command response indicating failure).  The error chain will be
  * in the same order as the errors indicated in @a params.  Use
  * @a pool for temporary allocations. */
-svn_error_t *svn_ra_svn__handle_failure_status(apr_array_header_t *params,
+svn_error_t *svn_ra_svn__handle_failure_status(const apr_array_header_t *params,
                                                apr_pool_t *pool);
 
 /* Returns a stream that reads/writes from/to SOCK. */
@@ -160,6 +196,13 @@ svn_error_t *svn_ra_svn__stream_write(svn_ra_svn__stream_t *stream,
 svn_error_t *svn_ra_svn__stream_read(svn_ra_svn__stream_t *stream,
                                      char *data, apr_size_t *len);
 
+/* Read the command word from CONN, return it in *COMMAND and skip to the
+ * end of the command.  Allocate data in POOL.
+ */
+svn_error_t *svn_ra_svn__read_command_only(svn_ra_svn_conn_t *conn,
+                                           apr_pool_t *pool,
+                                           const char **command);
+
 /* Set the timeout for operations on STREAM to INTERVAL. */
 void svn_ra_svn__stream_timeout(svn_ra_svn__stream_t *stream,
                                 apr_interval_time_t interval);
@@ -172,7 +215,7 @@ svn_boolean_t svn_ra_svn__stream_pending(svn_ra_svn__stream_t *stream);
  * tokens. */
 svn_error_t *
 svn_ra_svn__do_cyrus_auth(svn_ra_svn__session_baton_t *sess,
-                          apr_array_header_t *mechlist,
+                          const apr_array_header_t *mechlist,
                           const char *realm, apr_pool_t *pool);
 
 /* Same as svn_ra_svn__do_cyrus_auth, but uses the built-in implementation of
@@ -181,7 +224,7 @@ svn_ra_svn__do_cyrus_auth(svn_ra_svn__session_baton_t *sess,
  * mechanism with the server. */
 svn_error_t *
 svn_ra_svn__do_internal_auth(svn_ra_svn__session_baton_t *sess,
-                             apr_array_header_t *mechlist,
+                             const apr_array_header_t *mechlist,
                              const char *realm, apr_pool_t *pool);
 
 /* Having picked a mechanism, start authentication by writing out an
@@ -192,7 +235,7 @@ svn_error_t *svn_ra_svn__auth_response(svn_ra_svn_conn_t *conn,
                                        const char *mech, const char *mech_arg);
 
 /* Looks for MECH as a word in MECHLIST (an array of svn_ra_svn_item_t). */
-svn_boolean_t svn_ra_svn__find_mech(apr_array_header_t *mechlist,
+svn_boolean_t svn_ra_svn__find_mech(const apr_array_header_t *mechlist,
                                     const char *mech);
 
 /* Initialize the SASL library. */

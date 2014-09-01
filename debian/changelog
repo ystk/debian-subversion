@@ -1,42 +1,294 @@
-subversion (1.6.17dfsg-4+deb7u4) wheezy; urgency=low
+subversion (1.8.10-1) unstable; urgency=medium
+
+  * New upstream release.  Refresh patches.
+    - Includes security fixes:
+      + CVE-2014-3522: ra_serf improper validation of wildcards in SSL certs.
+      + CVE-2014-3528: credentials cached with svn may be sent to wrong
+        server.
+  * debian/rules: Avoid an unnecessary call to dpkg-buildflags.
+  * debian/control: Pre-Depend on ${misc:Pre-Depends} instead of hard-coding
+    multiarch-support, as suggested by Lintian.
+
+ -- James McCoy <jamessan@debian.org>  Tue, 12 Aug 2014 21:57:23 -0400
+
+subversion (1.8.9-2) unstable; urgency=medium
+
+  * Use Perl's $Config{vendorarch} to determine where libsvn-perl's files were
+    installed.  This enables being built against a Multi-Archified Perl.
+    (Closes: #752816)
+
+ -- James McCoy <jamessan@debian.org>  Wed, 16 Jul 2014 08:46:24 -0400
+
+subversion (1.8.9-1) unstable; urgency=medium
+
+  * New upstream release
+  * Merge changes from Ubuntu:
+    - Add DEB-8 test for Apache functionality
+    - debian/rules: Create pot file on build.
+    - debian/rules: Ensure the doxygen output directory exists
+    - Move svn2cl to subversion-tools' Suggests on Ubuntu.
+
+ -- James McCoy <jamessan@debian.org>  Tue, 20 May 2014 22:45:32 -0400
+
+subversion (1.8.8-2) unstable; urgency=medium
+
+  * Fix builds with ruby 2.x.  (Closes: #739772)
+
+ -- James McCoy <jamessan@debian.org>  Sun, 30 Mar 2014 22:46:58 -0400
+
+subversion (1.8.8-1) unstable; urgency=medium
+
+  * New upstream release.  Refresh patches.
+    - Remove backported patches sqlite_3.8.x_workaround & swig-pl_build_fix
+    - Fix integer overflows with 32-bit svnserv, which could cause an infinite
+      loop (Closes: #738840) or inaccurate statistics (Closes: #738841)
+    - Work around SQLite not honoring umask when creating rep-cache.db.
+      (Closes: #735446)
+    - Includes security fix:
+      + CVE-2014-0032: mod_dav_svn crash when handling certain requests with
+        SVNListParentPath on  (Closes: #737815)
+  * Add a subversion-dbg package.  (Closes: #508147)
+  * Bump libdb5.1-dev → libdb5.3-dev  (Closes: #738650)
+
+ -- James McCoy <jamessan@debian.org>  Thu, 20 Feb 2014 20:38:10 -0500
+
+subversion (1.8.5-2) unstable; urgency=medium
+
+  * rules: Move comment out of multi-line variable definition so configure is
+    run with the correct flags.  (Closes: #735609)
+  * control: Remove libsvn-ruby1.8 Provides from ruby-svn.
+  * Add patches/swig-pl_build_fix, from upstream, to fix a build failure when
+    configure is run with --enable-sqlite-compatibility.
+
+ -- James McCoy <jamessan@debian.org>  Fri, 17 Jan 2014 20:05:25 -0500
+
+subversion (1.8.5-1) unstable; urgency=low
+
+  [ Peter Samuelson ]
+  * New upstream release.  (Closes: #725787) Rediff patches:
+    - Remove apr-abi1 (applied upstream), rename apr-abi2 to apr-abi
+    - Remove loosen-sqlite-version-check (shouldn't be needed)
+    - Remove java-osgi-metadata (applied upstream)
+    - svnmucc prompts for a changelog if none is provided. (Closes: #507430)
+    - Remove fix-bdb-version-detection, upstream uses "apu-config --dbm-libs"
+    - Remove ruby-test-wc (applied upstream)
+    - Fix “svn diff -r N file” when file has svn:mime-type set.
+      (Closes: #734163)
+    - Support specifying an encoding for mod_dav_svn's environment in which
+      hooks are run.  (Closes: #601544)
+    - Fix ordering of “svnadmin dump” paths with certain APR versions.
+      (Closes: #687291)
+    - Provide a better error message when authentication fails with an
+      svn+ssh:// URL.  (Closes: #273874)
+    - Updated Polish translations.  (Closes: #690815)
+
+  [ James McCoy ]
+  * Remove all traces of libneon, replaced by libserf.
+  * patches/sqlite_3.8.x_workaround: Upstream fix for wc-queries-test test
+    failurse.
+  * Run configure with --with-apache-libexecdir, which allows removing part of
+    patches/rpath.
+  * Re-enable auth-test as upstream has fixed the problem of picking up
+    libraries from the environment rather than the build tree.
+    (Closes: #654172)
+  * Point LD_LIBRARY_PATH at the built auth libraries when running the svn
+    command during the build.  (Closes: #678224)
+  * Add a NEWS entry describing how to configure mod_dav_svn to understand
+    UTF-8.  (Closes: #566148)
+  * Remove ancient transitional package, libsvn-ruby.
+  * Enable compatibility with Sqlite3 versions back to Wheezy.
+  * Enable hardening flags.  (Closes: #734918)
+  * patches/build-fixes: Enable verbose build logs.
+  * Build against the default ruby version.  (Closes: #722393)
+
+ -- James McCoy <jamessan@debian.org>  Sun, 12 Jan 2014 19:48:33 -0500
+
+subversion (1.7.14-1) unstable; urgency=medium
+
+  * New upstream version.
+    - mod_dav_svn: Prevent crashes with some 3rd party modules.  (Closes:
+      #728352)
+    - Includes security fix:
+      + CVE-2013-4505: mod_dontdothat restrictions bypassed by relative
+        requests  (Closes: #730541)
+      + CVE-2013-4558: mod_dav_svn assertion when SVNAutoversioning is
+        enabled.
+  * Bump compat to debhelper 8
+  * Use shlibs.local to handle intrapackage dependencies on private libraries.
+  * rules: Fix removal of libsvnjavahl-1.a/.la/.so from libsvn-dev.  (Closes:
+    #711911)
+  * Remove obsolete conffiles under /etc/svn2cl.  (Closes: #677990)
+
+ -- James McCoy <jamessan@debian.org>  Fri, 27 Dec 2013 10:17:38 -0500
+
+subversion (1.7.13-3) unstable; urgency=low
+
+  * Remove architecture exclusions for libsvn-java.  (Closes: #710498)
+  * Fix multi-arch Python include paths.  (Closes: #698443)
+  * Add strict Depends on libsvn1 to libapach2-mod-svn since the latter
+    leverages some internal APIs and therefore must be upgraded in lock step.
+    (Closes: #705464)
+  * Standards-Version 3.9.5 (no change needed).
+  * Add strict minimum Depends on libsqlite3-0 to work around lack of build
+    time dependency information.  (Closes: #721878)
+
+ -- James McCoy <jamessan@debian.org>  Sat, 16 Nov 2013 11:33:37 -0500
+
+subversion (1.7.13-2) unstable; urgency=low
+
+  * Remove unnecessary libapache2-svn.prem.  (Closes: #726717)
+
+ -- James McCoy <jamessan@debian.org>  Fri, 18 Oct 2013 23:23:06 -0400
+
+subversion (1.7.13-1) unstable; urgency=low
+
+  [ Peter Samuelson ]
+  * New upstream version.  (Closes: #719476)
+    - patches/CVE-2013-1968.patch, patches/CVE-2013-2112.patch: remove,
+      obsoleted
+    - Includes security fixes:
+      + CVE-2013-4131: Remotely triggered crash in mod_dav_svn (Closes:
+        #717794)
+      + CVE-2013-4277: Local privilege escalation vulnerability via symlink
+        attack (Closes: #721542)
+      + CVE-2013-2088: Arbitrary code execution in check-mime-type.pl and
+        svn-keyword-check.pl contrib scripts.
+
+  [ James McCoy ]
+  * Add myself to uploaders.
+  * Acknowledge NMUs.
+  * Canonicalize the Vcs-* URLs.  Thanks, Lintian.
+  * Remove Guilherme de S. Pastore from Uploaders. (Closes: #698270)
+  * Add Breaks: svnmailer (<< 1.0.9) to python-subversion.  (Closes: #726491)
+  * Remove obsolete conffile /etc/emacs/site-start.d/50psvn.el.  (Closes:
+    #705033)
+
+ -- James McCoy <jamessan@debian.org>  Wed, 16 Oct 2013 20:53:11 -0400
+
+subversion (1.7.9-1+nmu6) unstable; urgency=low
+
+  * Add Breaks/Replaces: libapache2-svn to libapach2-mod-svn.
+
+ -- James McCoy <jamessan@debian.org>  Tue, 01 Oct 2013 00:28:55 -0400
+
+subversion (1.7.9-1+nmu5) unstable; urgency=low
 
   * Non-maintainer upload.
-  * patches/python-swig205: Backport upstream patch to fix Python bindings
-    when built against swig 2.0.5+.  (Closes: #683188)
-  * Remove patches/chunksize-integer.patch
+  * Re-enable libapache2-svn build  (Closes: #725028)
+  * Adjust packaging for Apache 2.4 compatibility  (Closes: #712004)
+    - Rename libapache2-svn to libapache2-mod-svn and add a transitional
+      package
+    - Add apache2-dev & dh-apache2 to Build-Depends
+    - Add apache2-api-20120211 as a Depends for libapache2-mod-svn
+    - Update maintainer scripts to use apache2-maintscript-helper
 
- -- James McCoy <jamessan@debian.org>  Wed, 02 Oct 2013 21:40:37 -0400
+ -- James McCoy <jamessan@debian.org>  Mon, 30 Sep 2013 19:02:34 -0400
 
-subversion (1.6.17dfsg-4+deb7u3) wheezy-security; urgency=high
+subversion (1.7.9-1+nmu4) unstable; urgency=low
 
-  * Non-maintainer upload by the Security Team.
+  * Non-maintainer upload.
+  * patches/ruby-test-wc: New patch from upstream to fix a stray case of a
+    testsuite failure due to APR 1.4 hash randomization.  Thanks to
+    Michael Gilbert for digging this up.  (Closes: #705364)
+  * Use --disable-neon-version-check to build libsvn_ra_neon against libneon27
+    0.30.0.
+  * Add handling of directory to symlink conversions for
+    /usr/share/doc/libsvn-{dev,java,ruby,ruby1.8}.  (Closes: #690155)
+
+ -- James McCoy <jamessan@debian.org>  Mon, 02 Sep 2013 21:11:08 -0400
+
+subversion (1.7.9-1+nmu3) unstable; urgency=high
+
+  * Non-maintainer upload.
+  * Disable libapache2-svn build (closes: #712004, #666794)
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 09 Jul 2013 19:56:11 +0200
+
+subversion (1.7.9-1+nmu2) unstable; urgency=high
+
+  * Non-maintainer upload.
   * Add CVE-2013-1968.patch patch.
     CVE-2013-1968: Subversion FSFS repositories can be corrupted by newline
     characters in filenames. (Closes: #711033)
   * Add CVE-2013-2112.patch patch.
     CVE-2013-2112: Fix remotely triggerable DoS vulnerability. (Closes: #711033)
 
- -- Salvatore Bonaccorso <carnil@debian.org>  Wed, 05 Jun 2013 23:12:33 +0200
+ -- Salvatore Bonaccorso <carnil@debian.org>  Thu, 06 Jun 2013 13:14:52 +0200
 
-subversion (1.6.17dfsg-4+deb7u2) wheezy; urgency=low
-
-  * Non-maintainer upload.
-  * Include following security fixes (Closes: #704940):
-    - CVE-2013-1845: Remotely triggered memory exhaustion in mod_dav_svn
-    - CVE-2013-1846: Remotely triggered crash in mod_dav_svn
-    - CVE-2013-1847: Remotely triggered crash in mod_dav_svn
-    - CVE-2013-1849: Remotely triggered crash in mod_dav_svn
-  * Convert SVN_STREAM_CHUNK_SIZE to an integer in svn/core.py
-    (Closes: #683188).
-
- -- Thomas Preud'homme <robotux@debian.org>  Tue, 16 Apr 2013 14:36:14 +0200
-
-subversion (1.6.17dfsg-4+deb7u1) wheezy; urgency=low
+subversion (1.7.9-1+nmu1) unstable; urgency=medium
 
   * Non-maintainer upload.
-  * No-change rebuild against swig 2.0.7 (closes: #683188)
+  * Convert SVN_STREAM_CHUNK_SIZE to an integer in svn/core.py (closes: #683188).
 
- -- Julien Cristau <jcristau@debian.org>  Fri, 22 Mar 2013 16:29:41 +0100
+ -- Michael Gilbert <mgilbert@debian.org>  Fri, 12 Apr 2013 00:58:01 +0000
+
+subversion (1.7.9-1) unstable; urgency=medium
+
+  * New upstream version.  Some DOS fixes in mod_dav_svn:
+    - CVE-2013-1845: mod_dav_svn excessive memory usage from property changes
+    - CVE-2013-1846: mod_dav_svn crashes on LOCK requests against activity URLs
+    - CVE-2013-1847: mod_dav_svn crashes on LOCK requests against non-existant
+      URLs
+    - CVE-2013-1849: mod_dav_svn crashes on PROPFIND requests against activity
+      URLs
+    - CVE-2013-1884: mod_dav_svn crashes on out of range limit in log REPORT
+      request
+  * patches/python-swig205, patches/g++47: Remove as obsolete.
+  * Don't make python-subversion 'Depends: subversion'.  It is quite
+    usable on its own.
+  * Move libsvn1 to section 'libs'.  (Ref: #700145)
+  * Update watch file.  (Closes: #672157)
+
+ -- Peter Samuelson <peter@p12n.org>  Sat, 06 Apr 2013 16:16:37 -0500
+
+subversion (1.7.5-1) unstable; urgency=low
+
+  [ Peter Samuelson ]
+  * New upstream version.  (Closes: #621692, #656966)
+    - Refresh patches; remove obsolete no-dbus-spam, kwallet-wid,
+      perl-warning, perl-compiler-flags, po, swig2-compat,
+      disable-failing-tests, python-exception-syntax
+    - Split patches/apr-abi into apr-abi1 (to be submitted) and
+      apr-abi2 (Debian-specific).
+    - Disable patches/ruby-test-info ... for now.
+    - Requires serf 1.0 or higher.
+  * Upstream no longer ships contrib in tarball:
+    - Remove contrib-license-audit
+    - subversion-tools now Recommends: svn2cl
+    - Ship svn-clean, svn-fast-backup, svn_apply_autoprops,
+      svn_load_dirs, commit-email.pl in debian/contrib
+    - Don't ship svnmerge.py, it has outlived its usefulness
+    - Delete patches/{svn2cl-*,svn-clean-ignore,commit-email}
+    - Overhaul debian/copyright
+  * rules: Specify that we want our own libtool.  Otherwise it finds the
+    one from /usr/share/apr-1.0/build, which doesn't support C++.
+  * patches/entropy: Remove as obsolete.  It was a workaround for apr
+    using /dev/random, but apr switched to /dev/urandom in 1.3.
+  * Move emacs plugins from subversion to subversion-tools.
+  * patches/java-osgi-metadata: Add OSGi metadata to the libsvn-java
+    jarfile.  Thanks Jakub Adam.  (Closes: #644438)
+  * Switch from python-support to dh_python2.
+  * patches/python-swig205: New patch: Adjust for swig 2.0.5+ handling of
+    Python ints vs. longs.
+
+  [ Michael Diers ]
+  * More contrib adjustments:
+    - Provide debian/contrib/emacs from upstream VCS contrib/client-side/emacs
+    - Add svn_1.6_releasenotes.html, svn_1.7_releasenotes.html
+    - subversion.docs, subversion.install
+    - subversion-tools.docs, subversion-tools.manpages
+
+ -- Peter Samuelson <peter@p12n.org>  Sat, 16 Jun 2012 23:56:38 -0500
+
+subversion (1.6.18dfsg-1) experimental; urgency=low
+
+  * New upstream version.
+    - patches/sasl-mem-handling: delete obsolete patch.
+  * Add Conflicts and Replaces: libsvn-jni.  (Closes: #675987)
+  * Rename libsvn-ruby1.8 to ruby-svn, per Ruby policy.
+    Leave transition package behind for wheezy.
+
+ -- Peter Samuelson <peter@p12n.org>  Fri, 08 Jun 2012 00:04:19 -0500
 
 subversion (1.6.17dfsg-4) unstable; urgency=medium
 

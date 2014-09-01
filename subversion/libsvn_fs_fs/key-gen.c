@@ -1,17 +1,22 @@
 /* key-gen.c --- manufacturing sequential keys for some db tables
  *
  * ====================================================================
- * Copyright (c) 2000-2004 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -36,8 +41,8 @@
 void
 svn_fs_fs__add_keys(const char *key1, const char *key2, char *result)
 {
-  int i1 = strlen(key1) - 1;
-  int i2 = strlen(key2) - 1;
+  apr_ssize_t i1 = strlen(key1) - 1;
+  apr_ssize_t i2 = strlen(key2) - 1;
   int i3 = 0;
   int val;
   int carry = 0;
@@ -55,7 +60,7 @@ svn_fs_fs__add_keys(const char *key1, const char *key2, char *result)
       carry = val / 36;
       val = val % 36;
 
-      buf[i3++] = (val <= 9) ? (val + '0') : (val - 10 + 'a');
+      buf[i3++] = (char)((val <= 9) ? (val + '0') : (val - 10 + 'a'));
 
       if (i1>=0)
         i1--;
@@ -74,8 +79,8 @@ svn_fs_fs__add_keys(const char *key1, const char *key2, char *result)
 void
 svn_fs_fs__next_key(const char *this, apr_size_t *len, char *next)
 {
+  apr_ssize_t i;
   apr_size_t olen = *len;     /* remember the first length */
-  int i = olen - 1;           /* initial index; we work backwards */
   char c;                     /* current char */
   svn_boolean_t carry = TRUE; /* boolean: do we have a carry or not?
                                  We start with a carry, because we're
@@ -110,7 +115,7 @@ svn_fs_fs__next_key(const char *this, apr_size_t *len, char *next)
               if (c == '9')
                 next[i] = 'a';
               else
-                next[i] = c + 1;
+                next[i] = ++c;
             }
         }
       else
@@ -141,8 +146,8 @@ svn_fs_fs__next_key(const char *this, apr_size_t *len, char *next)
 int
 svn_fs_fs__key_compare(const char *a, const char *b)
 {
-  int a_len = strlen(a);
-  int b_len = strlen(b);
+  apr_size_t a_len = strlen(a);
+  apr_size_t b_len = strlen(b);
   int cmp;
 
   if (a_len > b_len)

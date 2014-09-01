@@ -6,5 +6,3 @@ debian/tmp/usr/share/man/man8		usr/share/man
 
 BUILD/dummy_home/.subversion/config	etc/subversion
 BUILD/dummy_home/.subversion/servers	etc/subversion
-contrib/client-side/emacs/psvn.el	usr/share/emacs/site-lisp
-debian/etc/50psvn.el			etc/emacs/site-start.d

@@ -3,23 +3,27 @@
 # extractor.py: extract function names from declarations in header files
 #
 # ====================================================================
-# Copyright (c) 2000-2006, 2008 CollabNet.  All rights reserved.
+#    Licensed to the Apache Software Foundation (ASF) under one
+#    or more contributor license agreements.  See the NOTICE file
+#    distributed with this work for additional information
+#    regarding copyright ownership.  The ASF licenses this file
+#    to you under the Apache License, Version 2.0 (the
+#    "License"); you may not use this file except in compliance
+#    with the License.  You may obtain a copy of the License at
 #
-# This software is licensed as described in the file COPYING, which
-# you should have received as part of this distribution.  The terms
-# are also available at http://subversion.tigris.org/license-1.html.
-# If newer versions of this license are posted there, you may use a
-# newer version instead, at your option.
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
-# This software consists of voluntary contributions made by many
-# individuals.  For exact contribution history, see the revision
-# history and logs, available at http://subversion.tigris.org/.
+#    Unless required by applicable law or agreed to in writing,
+#    software distributed under the License is distributed on an
+#    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#    KIND, either express or implied.  See the License for the
+#    specific language governing permissions and limitations
+#    under the License.
 # ====================================================================
 #
 
 import os
 import re
-import string
 
 #
 # This parses the following two types of declarations:
@@ -51,6 +55,15 @@ _filter_names = [
   'svn_auth_get_kwallet_ssl_client_cert_pw_provider',
   'svn_auth_gnome_keyring_version',
   'svn_auth_kwallet_version',
+  'svn_auth_get_gpg_agent_simple_provider',
+  'svn_auth_gpg_agent_version',
+  # -DSVN_FS_INFO:
+  'svn_repos_capabilities',
+  'svn_repos_info_format',
+  'svn_fs_info_format',
+  'svn_fs_info_config_files',
+  'svn_fs_info',
+  'svn_fs_info_dup',
   ]
 
 if __name__ == '__main__':
@@ -62,3 +75,5 @@ if __name__ == '__main__':
       print(func)
     if os.path.basename(fname) == 'svn_ctype.h':
       print('svn_ctype_table = svn_ctype_table_internal CONSTANT')
+    elif os.path.basename(fname) == 'svn_wc_private.h':
+      print('svn_wc__internal_walk_children')

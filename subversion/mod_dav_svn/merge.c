@@ -2,17 +2,22 @@
  * merge.c: handle the MERGE response processing
  *
  * ====================================================================
- * Copyright (c) 2000-2004 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -24,6 +29,7 @@
 #include <httpd.h>
 #include <util_filter.h>
 
+#include "svn_hash.h"
 #include "svn_pools.h"
 #include "svn_fs.h"
 #include "svn_props.h"
@@ -31,6 +37,7 @@
 
 #include "dav_svn.h"
 
+#include "private/svn_fspath.h"
 
 /* #################################################################
 
@@ -163,14 +170,14 @@ do_resources(const dav_svn_repos *repos,
         {
           /* If we haven't already sent this path, send it (and then
              remember that we sent it). */
-          if (! apr_hash_get(sent, path, APR_HASH_KEY_STRING))
+          if (! svn_hash_gets(sent, path))
             {
               svn_node_kind_t kind;
               SVN_ERR(svn_fs_check_path(&kind, root, path, subpool));
               SVN_ERR(send_response(repos, root, path,
                                     kind == svn_node_dir,
                                     output, bb, subpool));
-              apr_hash_set(sent, path, APR_HASH_KEY_STRING, (void *)1);
+              svn_hash_sets(sent, path, (void *)1);
             }
         }
       if (send_parent)
@@ -179,12 +186,12 @@ do_resources(const dav_svn_repos *repos,
              (and then remember that you sent it).  Allocate parent in
              pool, not subpool, because it stays in the sent hash
              afterwards. */
-          const char *parent = svn_path_dirname(path, pool);
-          if (! apr_hash_get(sent, parent, APR_HASH_KEY_STRING))
+          const char *parent = svn_fspath__dirname(path, pool);
+          if (! svn_hash_gets(sent, parent))
             {
               SVN_ERR(send_response(repos, root, parent,
                                     TRUE, output, bb, subpool));
-              apr_hash_set(sent, parent, APR_HASH_KEY_STRING, (void *)1);
+              svn_hash_sets(sent, parent, (void *)1);
             }
         }
     }
@@ -217,6 +224,7 @@ dav_svn__merge_response(ap_filter_t *output,
   svn_string_t *creationdate, *creator_displayname;
   const char *post_commit_err_elem = NULL,
              *post_commit_header_info = NULL;
+  apr_status_t status;
 
   serr = svn_fs_revision_root(&root, repos->fs, new_rev, pool);
   if (serr != NULL)
@@ -247,7 +255,9 @@ dav_svn__merge_response(ap_filter_t *output,
       post_commit_err_elem = apr_psprintf(pool,
                                           "<S:post-commit-err>%s"
                                           "</S:post-commit-err>",
-                                          post_commit_err);
+                                          apr_xml_quote_string(pool,
+                                                               post_commit_err,
+                                                               0));
     }
   else
     {
@@ -275,7 +285,7 @@ dav_svn__merge_response(ap_filter_t *output,
     }
 
 
-  (void) ap_fputstrs(output, bb,
+  status = ap_fputstrs(output, bb,
                      DAV_XML_HEADER DEBUG_CR
                      "<D:merge-response xmlns:D=\"DAV:\"",
                      post_commit_header_info,
@@ -295,30 +305,43 @@ dav_svn__merge_response(ap_filter_t *output,
                      post_commit_err_elem, DEBUG_CR
                      "<D:version-name>", rev, "</D:version-name>" DEBUG_CR,
                      NULL);
+  if (status != APR_SUCCESS)
+    return dav_svn__new_error(repos->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                              "Could not write output");
+
   if (creationdate)
     {
-      (void) ap_fputstrs(output, bb,
+      status = ap_fputstrs(output, bb,
                          "<D:creationdate>",
                          apr_xml_quote_string(pool, creationdate->data, 1),
                          "</D:creationdate>" DEBUG_CR,
                          NULL);
+      if (status != APR_SUCCESS)
+        return dav_svn__new_error(repos->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                                  "Could not write output");
     }
   if (creator_displayname)
     {
-      (void) ap_fputstrs(output, bb,
+      status = ap_fputstrs(output, bb,
                          "<D:creator-displayname>",
                          apr_xml_quote_string(pool,
                                               creator_displayname->data, 1),
                          "</D:creator-displayname>" DEBUG_CR,
                          NULL);
+      if (status != APR_SUCCESS)
+        return dav_svn__new_error(repos->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                                  "Could not write output");
     }
-  (void) ap_fputstrs(output, bb,
+  status = ap_fputstrs(output, bb,
                      "</D:prop>" DEBUG_CR
                      "<D:status>HTTP/1.1 200 OK</D:status>" DEBUG_CR
                      "</D:propstat>" DEBUG_CR
                      "</D:response>" DEBUG_CR,
 
                      NULL);
+  if (status != APR_SUCCESS)
+    return dav_svn__new_error(repos->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                              "Could not write output");
 
   /* ONLY have dir_delta drive the editor if the caller asked us to
      generate a full MERGE response.  svn clients can ask us to
@@ -347,12 +370,18 @@ dav_svn__merge_response(ap_filter_t *output,
     }
 
   /* wrap up the merge response */
-  (void) ap_fputs(output, bb,
+  status = ap_fputs(output, bb,
                   "</D:updated-set>" DEBUG_CR
                   "</D:merge-response>" DEBUG_CR);
+  if (status != APR_SUCCESS)
+    return dav_svn__new_error(repos->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                              "Could not write output");
 
   /* send whatever is left in the brigade */
-  (void) ap_pass_brigade(output, bb);
+  status = ap_pass_brigade(output, bb);
+  if (status != APR_SUCCESS)
+    return dav_svn__new_error(repos->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                              "Could not write output");
 
-  return SVN_NO_ERROR;
+  return NULL;
 }

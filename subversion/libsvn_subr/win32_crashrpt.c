@@ -2,19 +2,27 @@
  * win32_crashrpt.c : provides information after a crash
  *
  * ====================================================================
- * Copyright (c) 2007 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
+
+/* prevent "empty compilation unit" warning on e.g. UNIX */
+typedef int win32_crashrpt__dummy;
 
 #ifdef WIN32
 #ifdef SVN_USE_WIN32_CRASHHANDLER
@@ -22,8 +30,10 @@
 /*** Includes. ***/
 #include <apr.h>
 #include <dbghelp.h>
+#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "svn_version.h"
 
@@ -39,6 +49,12 @@ HANDLE dbghelp_dll = INVALID_HANDLE_VALUE;
 #define DBGHELP_DLL "dbghelp.dll"
 
 #define LOGFILE_PREFIX "svn-crash-log"
+
+#if defined(_M_IX86)
+#define FORMAT_PTR "0x%08x"
+#elif defined(_M_X64)
+#define FORMAT_PTR "0x%016I64x"
+#endif
 
 /*** Code. ***/
 
@@ -152,7 +168,7 @@ write_module_info_callback(void *data,
       MINIDUMP_MODULE_CALLBACK module = callback_input->Module;
 
       char *buf = convert_wbcs_to_utf8(module.FullPath);
-      fprintf(log_file, "0x%08x", module.BaseOfImage);
+      fprintf(log_file, FORMAT_PTR, module.BaseOfImage);
       fprintf(log_file, "  %s", buf);
       free(buf);
 
@@ -174,11 +190,16 @@ write_process_info(EXCEPTION_RECORD *exception, CONTEXT *context,
 {
   OSVERSIONINFO oi;
   const char *cmd_line;
+  char workingdir[8192];
 
   /* write the command line */
   cmd_line = GetCommandLine();
   fprintf(log_file,
-                "Cmd line: %.65s\n", cmd_line);
+                "Cmd line: %s\n", cmd_line);
+
+  _getcwd(workingdir, sizeof(workingdir));
+  fprintf(log_file,
+                "Working Dir: %s\n", workingdir);
 
   /* write the svn version number info. */
   fprintf(log_file,
@@ -246,10 +267,10 @@ format_basic_type(char *buf, DWORD basic_type, DWORD64 length, void *address)
   switch(length)
     {
       case 1:
-        sprintf(buf, "%x", *(unsigned char *)address);
+        sprintf(buf, "0x%02x", (int)*(unsigned char *)address);
         break;
       case 2:
-        sprintf(buf, "%x", *(unsigned short *)address);
+        sprintf(buf, "0x%04x", (int)*(unsigned short *)address);
         break;
       case 4:
         switch(basic_type)
@@ -257,9 +278,9 @@ format_basic_type(char *buf, DWORD basic_type, DWORD64 length, void *address)
             case 2:  /* btChar */
               {
                 if (!IsBadStringPtr(*(PSTR*)address, 32))
-                  sprintf(buf, "\"%.31s\"", *(unsigned long *)address);
+                  sprintf(buf, "\"%.31s\"", *(const char **)address);
                 else
-                  sprintf(buf, "%x", *(unsigned long *)address);
+                  sprintf(buf, FORMAT_PTR, *(DWORD_PTR *)address);
               }
             case 6:  /* btInt */
               sprintf(buf, "%d", *(int *)address);
@@ -268,7 +289,7 @@ format_basic_type(char *buf, DWORD basic_type, DWORD64 length, void *address)
               sprintf(buf, "%f", *(float *)address);
               break;
             default:
-              sprintf(buf, "%x", *(unsigned long *)address);
+              sprintf(buf, FORMAT_PTR, *(DWORD_PTR *)address);
               break;
           }
         break;
@@ -276,7 +297,11 @@ format_basic_type(char *buf, DWORD basic_type, DWORD64 length, void *address)
         if (basic_type == 8) /* btFloat */
           sprintf(buf, "%lf", *(double *)address);
         else
-          sprintf(buf, "%I64X", *(unsigned __int64 *)address);
+          sprintf(buf, "0x%016I64X", *(unsigned __int64 *)address);
+        break;
+      default:
+        sprintf(buf, "[unhandled type 0x%08x of length " FORMAT_PTR "]",
+                     basic_type, length);
         break;
     }
 }
@@ -286,7 +311,7 @@ format_basic_type(char *buf, DWORD basic_type, DWORD64 length, void *address)
 static void
 format_value(char *value_str, DWORD64 mod_base, DWORD type, void *value_addr)
 {
-  DWORD tag;
+  DWORD tag = 0;
   int ptr = 0;
   HANDLE proc = GetCurrentProcess();
 
@@ -314,17 +339,19 @@ format_value(char *value_str, DWORD64 mod_base, DWORD type, void *value_addr)
               LocalFree(type_name_wbcs);
 
               if (ptr == 0)
-                sprintf(value_str, "(%s) 0x%08x",
-                        type_name, (DWORD *)value_addr);
+                sprintf(value_str, "(%s) " FORMAT_PTR,
+                        type_name, (DWORD_PTR *)value_addr);
               else if (ptr == 1)
-                sprintf(value_str, "(%s *) 0x%08x",
-                        type_name, *(DWORD *)value_addr);
+                sprintf(value_str, "(%s *) " FORMAT_PTR,
+                        type_name, *(DWORD_PTR *)value_addr);
               else
-                sprintf(value_str, "(%s **) 0x%08x",
-                        type_name, (DWORD *)value_addr);
+                sprintf(value_str, "(%s **) " FORMAT_PTR,
+                        type_name, *(DWORD_PTR *)value_addr);
 
               free(type_name);
             }
+          else
+            sprintf(value_str, "[no symbol tag]");
         }
         break;
       case 16: /* SymTagBaseType */
@@ -336,35 +363,34 @@ format_value(char *value_str, DWORD64 mod_base, DWORD type, void *value_addr)
           /* print a char * as a string */
           if (ptr == 1 && length == 1)
             {
-              sprintf(value_str, "0x%08x \"%s\"",
-                      *(DWORD *)value_addr, (char *)*(DWORD*)value_addr);
-              break;
+              sprintf(value_str, FORMAT_PTR " \"%s\"",
+                      *(DWORD_PTR *)value_addr, *(const char **)value_addr);
             }
-          if (ptr >= 1)
+          else if (ptr >= 1)
             {
-              sprintf(value_str, "0x%08x", *(DWORD *)value_addr);
-              break;
+              sprintf(value_str, FORMAT_PTR, *(DWORD_PTR *)value_addr);
             }
-          if (SymGetTypeInfo_(proc, mod_base, type, TI_GET_BASETYPE, &bt))
+          else if (SymGetTypeInfo_(proc, mod_base, type, TI_GET_BASETYPE, &bt))
             {
               format_basic_type(value_str, bt, length, value_addr);
-              break;
             }
         }
         break;
       case 12: /* SymTagEnum */
-          sprintf(value_str, "%d", *(DWORD *)value_addr);
+          sprintf(value_str, "%d", *(DWORD_PTR *)value_addr);
           break;
       case 13: /* SymTagFunctionType */
-          sprintf(value_str, "0x%08x", *(DWORD *)value_addr);
+          sprintf(value_str, FORMAT_PTR, *(DWORD_PTR *)value_addr);
           break;
-      default: break;
+      default:
+          sprintf(value_str, "[unhandled tag: %d]", tag);
+          break;
     }
 }
 
 /* Internal structure used to pass some data to the enumerate symbols
  * callback */
-typedef struct {
+typedef struct symbols_baton_t {
   STACKFRAME64 *stack_frame;
   FILE *log_file;
   int nr_of_frame;
@@ -392,7 +418,7 @@ write_var_values(PSYMBOL_INFO sym_info, ULONG sym_size, void *baton)
   else
     return FALSE;
 
-  if (log_params == TRUE && sym_info->Flags & SYMFLAG_PARAMETER)
+  if (log_params && sym_info->Flags & SYMFLAG_PARAMETER)
     {
       if (last_nr_of_frame == nr_of_frame)
         fprintf(log_file, ", ", 2);
@@ -401,13 +427,15 @@ write_var_values(PSYMBOL_INFO sym_info, ULONG sym_size, void *baton)
 
       format_value(value_str, sym_info->ModBase, sym_info->TypeIndex,
                    (void *)var_data);
-      fprintf(log_file, "%s=%s", sym_info->Name, value_str);
+      fprintf(log_file, "%.*s=%s", (int)sym_info->NameLen, sym_info->Name,
+              value_str);
     }
-  if (log_params == FALSE && sym_info->Flags & SYMFLAG_LOCAL)
+  if (!log_params && sym_info->Flags & SYMFLAG_LOCAL)
     {
       format_value(value_str, sym_info->ModBase, sym_info->TypeIndex,
                    (void *)var_data);
-      fprintf(log_file, "        %s = %s\n", sym_info->Name, value_str);
+      fprintf(log_file, "        %.*s = %s\n", (int)sym_info->NameLen,
+              sym_info->Name, value_str);
     }
 
   return TRUE;
@@ -415,10 +443,10 @@ write_var_values(PSYMBOL_INFO sym_info, ULONG sym_size, void *baton)
 
 /* Write the details of one function to the log file */
 static void
-write_function_detail(STACKFRAME64 stack_frame, void *data)
+write_function_detail(STACKFRAME64 stack_frame, int nr_of_frame, FILE *log_file)
 {
   ULONG64 symbolBuffer[(sizeof(SYMBOL_INFO) +
-    MAX_PATH +
+    MAX_SYM_NAME +
     sizeof(ULONG64) - 1) /
     sizeof(ULONG64)];
   PSYMBOL_INFO pIHS = (PSYMBOL_INFO)symbolBuffer;
@@ -429,22 +457,21 @@ write_function_detail(STACKFRAME64 stack_frame, void *data)
   DWORD line_disp=0;
 
   HANDLE proc = GetCurrentProcess();
-  FILE *log_file = (FILE *)data;
 
   symbols_baton_t ensym;
 
-  static int nr_of_frame = 0;
-
-  nr_of_frame++;
+  nr_of_frame++; /* We need a 1 based index here */
 
   /* log the function name */
   pIHS->SizeOfStruct = sizeof(SYMBOL_INFO);
-  pIHS->MaxNameLen = MAX_PATH;
-  if (SymFromAddr_(proc, stack_frame.AddrPC.Offset, &func_disp, pIHS) == TRUE)
+  pIHS->MaxNameLen = MAX_SYM_NAME;
+  if (SymFromAddr_(proc, stack_frame.AddrPC.Offset, &func_disp, pIHS))
     {
       fprintf(log_file,
-                    "#%d  0x%08I64x in %.200s (",
-                    nr_of_frame, stack_frame.AddrPC.Offset, pIHS->Name);
+                    "#%d  0x%08I64x in %.*s(",
+                    nr_of_frame, stack_frame.AddrPC.Offset,
+                    pIHS->NameLen > 200 ? 200 : (int)pIHS->NameLen,
+                    pIHS->Name);
 
       /* restrict symbol enumeration to this frame only */
       ih_stack_frame.InstructionOffset = stack_frame.AddrPC.Offset;
@@ -503,8 +530,12 @@ write_stacktrace(CONTEXT *context, FILE *log_file)
       skip = 1;
 
       ctx.ContextFlags = CONTEXT_FULL;
-      if (GetThreadContext(GetCurrentThread(), &ctx))
-        context = &ctx;
+      if (!GetThreadContext(GetCurrentThread(), &ctx))
+        return;
+    }
+  else
+    {
+      ctx = *context;
     }
 
   if (context == NULL)
@@ -539,7 +570,7 @@ write_stacktrace(CONTEXT *context, FILE *log_file)
   while (1)
     {
       if (! StackWalk64_(machine, proc, GetCurrentThread(),
-                         &stack_frame, context, NULL,
+                         &stack_frame, &ctx, NULL,
                          SymFunctionTableAccess64_, SymGetModuleBase64_, NULL))
         {
           break;
@@ -552,7 +583,7 @@ write_stacktrace(CONTEXT *context, FILE *log_file)
              returns TRUE with a frame of zero. */
           if (stack_frame.AddrPC.Offset != 0)
             {
-              write_function_detail(stack_frame, (void *)log_file);
+              write_function_detail(stack_frame, i, log_file);
             }
         }
       i++;
@@ -708,17 +739,17 @@ svn__unhandled_exception_filter(PEXCEPTION_POINTERS ptrs)
     return EXCEPTION_CONTINUE_SEARCH;
 
   /* don't log anything if we're running inside a debugger ... */
-  if (is_debugger_present() == TRUE)
+  if (is_debugger_present())
     return EXCEPTION_CONTINUE_SEARCH;
 
   /* ... or if we can't create the log files ... */
-  if (get_temp_filename(dmp_filename, LOGFILE_PREFIX, "dmp") == FALSE ||
-      get_temp_filename(log_filename, LOGFILE_PREFIX, "log") == FALSE)
+  if (!get_temp_filename(dmp_filename, LOGFILE_PREFIX, "dmp") ||
+      !get_temp_filename(log_filename, LOGFILE_PREFIX, "log"))
     return EXCEPTION_CONTINUE_SEARCH;
 
   /* If we can't load a recent version of the dbghelp.dll, pass on this
      exception */
-  if (load_dbghelp_dll() == FALSE)
+  if (!load_dbghelp_dll())
     return EXCEPTION_CONTINUE_SEARCH;
 
   /* open log file */
@@ -742,14 +773,12 @@ svn__unhandled_exception_filter(PEXCEPTION_POINTERS ptrs)
 
   fclose(log_file);
 
-  cleanup_debughlp();
-
   /* inform the user */
   fprintf(stderr, "This application has halted due to an unexpected error.\n"
                   "A crash report and minidump file were saved to disk, you"
                   " can find them here:\n"
                   "%s\n%s\n"
-                  "Please send the log file to %s to help us analyse\nand "
+                  "Please send the log file to %s to help us analyze\nand "
                   "solve this problem.\n\n"
                   "NOTE: The crash report and minidump files can contain some"
                   " sensitive information\n(filenames, partial file content, "
@@ -757,6 +786,21 @@ svn__unhandled_exception_filter(PEXCEPTION_POINTERS ptrs)
                   log_filename,
                   dmp_filename,
                   CRASHREPORT_EMAIL);
+
+  if (getenv("SVN_DBG_STACKTRACES_TO_STDERR") != NULL)
+    {
+      fprintf(stderr, "\nProcess info:\n");
+      write_process_info(ptrs ? ptrs->ExceptionRecord : NULL,
+                         ptrs ? ptrs->ContextRecord : NULL,
+                         stderr);
+      fprintf(stderr, "\nStacktrace:\n");
+      write_stacktrace(ptrs ? ptrs->ContextRecord : NULL, stderr);
+    }
+
+  fflush(stderr);
+  fflush(stdout);
+
+  cleanup_debughlp();
 
   /* terminate the application */
   return EXCEPTION_EXECUTE_HANDLER;

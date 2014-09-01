@@ -1,17 +1,22 @@
 /* repos.c : repository creation; shared and exclusive repository locking
  *
  * ====================================================================
- * Copyright (c) 2000-2007 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -27,6 +32,12 @@
 #include "svn_fs.h"
 #include "svn_ra.h"  /* for SVN_RA_CAPABILITY_* */
 #include "svn_repos.h"
+#include "svn_hash.h"
+#include "svn_version.h"
+#include "svn_config.h"
+
+#include "private/svn_repos_private.h"
+#include "private/svn_subr_private.h"
 #include "svn_private_config.h" /* for SVN_TEMPLATE_ROOT_DIR */
 
 #include "repos.h"
@@ -62,7 +73,7 @@ svn_repos_conf_dir(svn_repos_t *repos, apr_pool_t *pool)
 const char *
 svn_repos_svnserve_conf(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->conf_path, SVN_REPOS__CONF_SVNSERVE_CONF, pool);
+  return svn_dirent_join(repos->conf_path, SVN_REPOS__CONF_SVNSERVE_CONF, pool);
 }
 
 
@@ -76,14 +87,14 @@ svn_repos_lock_dir(svn_repos_t *repos, apr_pool_t *pool)
 const char *
 svn_repos_db_lockfile(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->lock_path, SVN_REPOS__DB_LOCKFILE, pool);
+  return svn_dirent_join(repos->lock_path, SVN_REPOS__DB_LOCKFILE, pool);
 }
 
 
 const char *
 svn_repos_db_logs_lockfile(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->lock_path, SVN_REPOS__DB_LOGS_LOCKFILE, pool);
+  return svn_dirent_join(repos->lock_path, SVN_REPOS__DB_LOGS_LOCKFILE, pool);
 }
 
 const char *
@@ -96,55 +107,55 @@ svn_repos_hook_dir(svn_repos_t *repos, apr_pool_t *pool)
 const char *
 svn_repos_start_commit_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_START_COMMIT, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_START_COMMIT, pool);
 }
 
 
 const char *
 svn_repos_pre_commit_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_PRE_COMMIT, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_PRE_COMMIT, pool);
 }
 
 
 const char *
 svn_repos_pre_lock_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_PRE_LOCK, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_PRE_LOCK, pool);
 }
 
 
 const char *
 svn_repos_pre_unlock_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_PRE_UNLOCK, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_PRE_UNLOCK, pool);
 }
 
 const char *
 svn_repos_post_lock_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_POST_LOCK, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_POST_LOCK, pool);
 }
 
 
 const char *
 svn_repos_post_unlock_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_POST_UNLOCK, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_POST_UNLOCK, pool);
 }
 
 
 const char *
 svn_repos_post_commit_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_POST_COMMIT, pool);
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_POST_COMMIT, pool);
 }
 
 
 const char *
 svn_repos_pre_revprop_change_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_PRE_REVPROP_CHANGE,
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_PRE_REVPROP_CHANGE,
                        pool);
 }
 
@@ -152,10 +163,9 @@ svn_repos_pre_revprop_change_hook(svn_repos_t *repos, apr_pool_t *pool)
 const char *
 svn_repos_post_revprop_change_hook(svn_repos_t *repos, apr_pool_t *pool)
 {
-  return svn_path_join(repos->hook_path, SVN_REPOS__HOOK_POST_REVPROP_CHANGE,
+  return svn_dirent_join(repos->hook_path, SVN_REPOS__HOOK_POST_REVPROP_CHANGE,
                        pool);
 }
-
 
 static svn_error_t *
 create_repos_dir(const char *path, apr_pool_t *pool)
@@ -176,10 +186,10 @@ create_repos_dir(const char *path, apr_pool_t *pool)
       else
         err = svn_error_createf(SVN_ERR_DIR_NOT_EMPTY, 0,
                                 _("'%s' exists and is non-empty"),
-                                svn_path_local_style(path, pool));
+                                svn_dirent_local_style(path, pool));
     }
 
-  return err;
+  return svn_error_trace(err);
 }
 
 static const char * bdb_lock_file_contents =
@@ -295,16 +305,17 @@ create_hooks(svn_repos_t *repos, apr_pool_t *pool)
 ""                                                                           NL
 "# START-COMMIT HOOK"                                                        NL
 "#"                                                                          NL
-"# The start-commit hook is invoked before a Subversion txn is created"      NL
-"# in the process of doing a commit.  Subversion runs this hook"             NL
-"# by invoking a program (script, executable, binary, etc.) named"           NL
-"# '"SCRIPT_NAME"' (for which this file is a template)"                      NL
-"# with the following ordered arguments:"                                    NL
+"# The start-commit hook is invoked immediately after a Subversion txn is"   NL
+"# created and populated with initial revprops in the process of doing a"    NL
+"# commit. Subversion runs this hook by invoking a program (script, "        NL
+"# executable, binary, etc.) named '"SCRIPT_NAME"' (for which this file"     NL
+"# is a template) with the following ordered arguments:"                     NL
 "#"                                                                          NL
 "#   [1] REPOS-PATH   (the path to this repository)"                         NL
 "#   [2] USER         (the authenticated user attempting to commit)"         NL
 "#   [3] CAPABILITIES (a colon-separated list of capabilities reported"      NL
 "#                     by the client; see note below)"                       NL
+"#   [4] TXN-NAME     (the name of the commit txn just created)"             NL
 "#"                                                                          NL
 "# Note: The CAPABILITIES parameter is new in Subversion 1.5, and 1.5"       NL
 "# clients will typically report at least the \""                            \
@@ -313,6 +324,11 @@ create_hooks(svn_repos_t *repos, apr_pool_t *pool)
 "# e.g.: \"" SVN_RA_CAPABILITY_MERGEINFO ":some-other-capability\" "         \
   "(the order is undefined)."                                                NL
 "#"                                                                          NL
+"# Note: The TXN-NAME parameter is new in Subversion 1.8.  Prior to version" NL
+"# 1.8, the start-commit hook was invoked before the commit txn was even"    NL
+"# created, so the ability to inspect the commit txn and its metadata from"  NL
+"# within the start-commit hook was not possible."                           NL
+"# "                                                                         NL
 "# The list is self-reported by the client.  Therefore, you should not"      NL
 "# make security assumptions based on the capabilities list, nor should"     NL
 "# you assume that clients reliably report every capability they have."      NL
@@ -355,6 +371,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               _("Creating start-commit hook"));
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   }  /* end start-commit hook */
 
   /* Pre-commit hook. */
@@ -445,6 +463,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               _("Creating pre-commit hook"));
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   }  /* end pre-commit hook */
 
 
@@ -468,7 +488,7 @@ PREWRITTEN_HOOKS_TEXT
 "# arguments:"                                                               NL
 "#"                                                                          NL
 "#   [1] REPOS-PATH   (the path to this repository)"                         NL
-"#   [2] REVISION     (the revision being tweaked)"                          NL
+"#   [2] REV          (the revision being tweaked)"                          NL
 "#   [3] USER         (the username of the person tweaking the property)"    NL
 "#   [4] PROPNAME     (the property being set on the revision)"              NL
 "#   [5] ACTION       (the property is being 'A'dded, 'M'odified, or 'D'eleted)"
@@ -521,6 +541,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               _("Creating pre-revprop-change hook"));
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   }  /* end pre-revprop-change hook */
 
 
@@ -577,6 +599,8 @@ PREWRITTEN_HOOKS_TEXT
 "REPOS=\"$1\""                                                               NL
 "PATH=\"$2\""                                                                NL
 "USER=\"$3\""                                                                NL
+"COMMENT=\"$4\""                                                             NL
+"STEAL=\"$5\""                                                               NL
 ""                                                                           NL
 "# If a lock exists and is owned by a different person, don't allow it"      NL
 "# to be stolen (e.g., with 'svn lock --force ...')."                        NL
@@ -609,6 +633,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               "Creating pre-lock hook");
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   }  /* end pre-lock hook */
 
 
@@ -660,6 +686,8 @@ PREWRITTEN_HOOKS_TEXT
 "REPOS=\"$1\""                                                               NL
 "PATH=\"$2\""                                                                NL
 "USER=\"$3\""                                                                NL
+"TOKEN=\"$4\""                                                               NL
+"BREAK=\"$5\""                                                               NL
 ""                                                                           NL
 "# If a lock is owned by a different person, don't allow it be broken."      NL
 "# (Maybe this script could send email to the lock owner?)"                  NL
@@ -689,6 +717,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               "Creating pre-unlock hook");
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   }  /* end pre-unlock hook */
 
 
@@ -713,6 +743,7 @@ PREWRITTEN_HOOKS_TEXT
 "#"                                                                          NL
 "#   [1] REPOS-PATH   (the path to this repository)"                         NL
 "#   [2] REV          (the number of the revision just committed)"           NL
+"#   [3] TXN-NAME     (the name of the transaction that has become REV)"     NL
 "#"                                                                          NL
 "# The default working directory for the invocation is undefined, so"        NL
 "# the program should set one explicitly if it cares."                       NL
@@ -742,6 +773,7 @@ PREWRITTEN_HOOKS_TEXT
 ""                                                                           NL
 "REPOS=\"$1\""                                                               NL
 "REV=\"$2\""                                                                 NL
+"TXN_NAME=\"$3\""                                                            NL
                                                                              NL
 "mailer.py commit \"$REPOS\" \"$REV\" /path/to/mailer.conf"                  NL;
 
@@ -749,6 +781,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               _("Creating post-commit hook"));
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   } /* end post-commit hook */
 
 
@@ -810,6 +844,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               "Creating post-lock hook");
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   } /* end post-lock hook */
 
 
@@ -869,6 +905,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               "Creating post-unlock hook");
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   } /* end post-unlock hook */
 
 
@@ -935,6 +973,8 @@ PREWRITTEN_HOOKS_TEXT
 
     SVN_ERR_W(svn_io_file_create(this_path, contents, pool),
               _("Creating post-revprop-change hook"));
+
+    SVN_ERR(svn_io_set_file_executable(this_path, TRUE, FALSE, pool));
   } /* end post-revprop-change hook */
 
   return SVN_NO_ERROR;
@@ -954,12 +994,19 @@ create_conf(svn_repos_t *repos, apr_pool_t *pool)
 "### access through http: and/or file: URLs, then this file is"              NL
 "### irrelevant.)"                                                           NL
 ""                                                                           NL
-"### Visit http://subversion.tigris.org/ for more information."              NL
+"### Visit http://subversion.apache.org/ for more information."              NL
 ""                                                                           NL
 "[general]"                                                                  NL
-"### These options control access to the repository for unauthenticated"     NL
-"### and authenticated users.  Valid values are \"write\", \"read\","        NL
-"### and \"none\".  The sample settings below are the defaults."             NL
+"### The anon-access and auth-access options control access to the"          NL
+"### repository for unauthenticated (a.k.a. anonymous) users and"            NL
+"### authenticated users, respectively."                                     NL
+"### Valid values are \"write\", \"read\", and \"none\"."                    NL
+"### Setting the value to \"none\" prohibits both reading and writing;"      NL
+"### \"read\" allows read-only access, and \"write\" allows complete "       NL
+"### read/write access to the repository."                                   NL
+"### The sample settings below are the defaults and specify that anonymous"  NL
+"### users have read-only access to the repository, while authenticated"     NL
+"### users have read and write access to the repository."                    NL
 "# anon-access = read"                                                       NL
 "# auth-access = write"                                                      NL
 "### The password-db option controls the location of the password"           NL
@@ -971,16 +1018,38 @@ create_conf(svn_repos_t *repos, apr_pool_t *pool)
 "# password-db = passwd"                                                     NL
 "### The authz-db option controls the location of the authorization"         NL
 "### rules for path-based access control.  Unless you specify a path"        NL
-"### starting with a /, the file's location is relative to the the"          NL
-"### directory containing this file.  If you don't specify an"               NL
-"### authz-db, no path-based access control is done."                        NL
+"### starting with a /, the file's location is relative to the"              NL
+"### directory containing this file.  The specified path may be a"           NL
+"### repository relative URL (^/) or an absolute file:// URL to a text"      NL
+"### file in a Subversion repository.  If you don't specify an authz-db,"    NL
+"### no path-based access control is done."                                  NL
 "### Uncomment the line below to use the default authorization file."        NL
 "# authz-db = " SVN_REPOS__CONF_AUTHZ                                        NL
+"### The groups-db option controls the location of the groups file."         NL
+"### Unless you specify a path starting with a /, the file's location is"    NL
+"### relative to the directory containing this file.  The specified path"    NL
+"### may be a repository relative URL (^/) or an absolute file:// URL to a"  NL
+"### text file in a Subversion repository."                                  NL
+"# groups-db = " SVN_REPOS__CONF_GROUPS                                      NL
 "### This option specifies the authentication realm of the repository."      NL
 "### If two repositories have the same authentication realm, they should"    NL
 "### have the same password database, and vice versa.  The default realm"    NL
 "### is repository's uuid."                                                  NL
 "# realm = My First Repository"                                              NL
+"### The force-username-case option causes svnserve to case-normalize"       NL
+"### usernames before comparing them against the authorization rules in the" NL
+"### authz-db file configured above.  Valid values are \"upper\" (to upper-" NL
+"### case the usernames), \"lower\" (to lowercase the usernames), and"       NL
+"### \"none\" (to compare usernames as-is without case conversion, which"    NL
+"### is the default behavior)."                                              NL
+"# force-username-case = none"                                               NL
+"### The hooks-env options specifies a path to the hook script environment " NL
+"### configuration file. This option overrides the per-repository default"   NL
+"### and can be used to configure the hook script environment for multiple " NL
+"### repositories in a single file, if an absolute path is specified."       NL
+"### Unless you specify an absolute path, the file's location is relative"   NL
+"### to the directory containing this file."                                 NL
+"# hooks-env = " SVN_REPOS__CONF_HOOKS_ENV                                   NL
 ""                                                                           NL
 "[sasl]"                                                                     NL
 "### This option specifies whether you want to use the Cyrus SASL"           NL
@@ -1013,9 +1082,9 @@ create_conf(svn_repos_t *repos, apr_pool_t *pool)
 "# harry = harryssecret"                                                     NL
 "# sally = sallyssecret"                                                     NL;
 
-    SVN_ERR_W(svn_io_file_create(svn_path_join(repos->conf_path,
-                                               SVN_REPOS__CONF_PASSWD,
-                                               pool),
+    SVN_ERR_W(svn_io_file_create(svn_dirent_join(repos->conf_path,
+                                                 SVN_REPOS__CONF_PASSWD,
+                                                 pool),
                                  passwd_contents, pool),
               _("Creating passwd file"));
   }
@@ -1055,12 +1124,61 @@ create_conf(svn_repos_t *repos, apr_pool_t *pool)
 "# @harry_and_sally = rw"                                                    NL
 "# * = r"                                                                    NL;
 
-    SVN_ERR_W(svn_io_file_create(svn_path_join(repos->conf_path,
-                                               SVN_REPOS__CONF_AUTHZ,
-                                               pool),
+    SVN_ERR_W(svn_io_file_create(svn_dirent_join(repos->conf_path,
+                                                 SVN_REPOS__CONF_AUTHZ,
+                                                 pool),
                                  authz_contents, pool),
               _("Creating authz file"));
   }
+
+  {
+    static const char * const hooks_env_contents =
+"### This file is an example hook script environment configuration file."    NL
+"### Hook scripts run in an empty environment by default."                   NL
+"### As shown below each section defines environment variables for a"        NL
+"### particular hook script. The [default] section defines environment"      NL
+"### variables for all hook scripts, unless overridden by a hook-specific"   NL
+"### section."                                                               NL
+""                                                                           NL
+"### This example configures a UTF-8 locale for all hook scripts, so that "  NL
+"### special characters, such as umlauts, may be printed to stderr."         NL
+"### If UTF-8 is used with a mod_dav_svn server, the SVNUseUTF8 option must" NL
+"### also be set to 'yes' in httpd.conf."                                    NL
+"### With svnserve, the LANG environment variable of the svnserve process"   NL
+"### must be set to the same value as given here."                           NL
+"[default]"                                                                  NL
+"LANG = en_US.UTF-8"                                                         NL
+""                                                                           NL
+"### This sets the PATH environment variable for the pre-commit hook."       NL
+"[pre-commit]"                                                               NL
+"PATH = /usr/local/bin:/usr/bin:/usr/sbin"                                   NL;
+
+    SVN_ERR_W(svn_io_file_create(svn_dirent_join(repos->conf_path,
+                                                 SVN_REPOS__CONF_HOOKS_ENV \
+                                                 SVN_REPOS__HOOK_DESC_EXT,
+                                                 pool),
+                                 hooks_env_contents, pool),
+              _("Creating hooks-env file"));
+  }
+
+  return SVN_NO_ERROR;
+}
+
+svn_error_t *
+svn_repos_hooks_setenv(svn_repos_t *repos,
+                       const char *hooks_env_path,
+                       apr_pool_t *scratch_pool)
+{
+  if (hooks_env_path == NULL)
+    repos->hooks_env_path = svn_dirent_join(repos->conf_path,
+                                            SVN_REPOS__CONF_HOOKS_ENV,
+                                            repos->pool);
+  else if (!svn_dirent_is_absolute(hooks_env_path))
+    repos->hooks_env_path = svn_dirent_join(repos->conf_path,
+                                            hooks_env_path,
+                                            repos->pool);
+  else
+    repos->hooks_env_path = apr_pstrdup(repos->pool, hooks_env_path);
 
   return SVN_NO_ERROR;
 }
@@ -1076,11 +1194,13 @@ create_svn_repos_t(const char *path, apr_pool_t *pool)
   svn_repos_t *repos = apr_pcalloc(pool, sizeof(*repos));
 
   repos->path = apr_pstrdup(pool, path);
-  repos->db_path = svn_path_join(path, SVN_REPOS__DB_DIR, pool);
-  repos->conf_path = svn_path_join(path, SVN_REPOS__CONF_DIR, pool);
-  repos->hook_path = svn_path_join(path, SVN_REPOS__HOOK_DIR, pool);
-  repos->lock_path = svn_path_join(path, SVN_REPOS__LOCK_DIR, pool);
+  repos->db_path = svn_dirent_join(path, SVN_REPOS__DB_DIR, pool);
+  repos->conf_path = svn_dirent_join(path, SVN_REPOS__CONF_DIR, pool);
+  repos->hook_path = svn_dirent_join(path, SVN_REPOS__HOOK_DIR, pool);
+  repos->lock_path = svn_dirent_join(path, SVN_REPOS__LOCK_DIR, pool);
+  repos->hooks_env_path = NULL;
   repos->repository_capabilities = apr_hash_make(pool);
+  repos->pool = pool;
 
   return repos;
 }
@@ -1098,13 +1218,11 @@ create_repos_structure(svn_repos_t *repos,
 
   /* Create the DAV sandbox directory if pre-1.4 or pre-1.5-compatible. */
   if (fs_config
-      && (apr_hash_get(fs_config, SVN_FS_CONFIG_PRE_1_4_COMPATIBLE,
-                       APR_HASH_KEY_STRING)
-          || apr_hash_get(fs_config, SVN_FS_CONFIG_PRE_1_5_COMPATIBLE,
-                          APR_HASH_KEY_STRING)))
+      && (svn_hash_gets(fs_config, SVN_FS_CONFIG_PRE_1_4_COMPATIBLE)
+          || svn_hash_gets(fs_config, SVN_FS_CONFIG_PRE_1_5_COMPATIBLE)))
     {
-      const char *dav_path = svn_path_join(repos->path,
-                                           SVN_REPOS__DAV_DIR, pool);
+      const char *dav_path = svn_dirent_join(repos->path,
+                                             SVN_REPOS__DAV_DIR, pool);
       SVN_ERR_W(create_repos_dir(dav_path, pool),
                 _("Creating DAV sandbox dir"));
     }
@@ -1121,9 +1239,9 @@ create_repos_structure(svn_repos_t *repos,
   /* Write the top-level README file. */
   {
     const char * const readme_header =
-      "This is a Subversion repository; use the 'svnadmin' tool to examine"  NL
-      "it.  Do not add, delete, or modify files here unless you know how"    NL
-      "to avoid corrupting the repository."                                  NL
+      "This is a Subversion repository; use the 'svnadmin' and 'svnlook' "   NL
+      "tools to examine it.  Do not add, delete, or modify files here "      NL
+      "unless you know how to avoid corrupting the repository."              NL
       ""                                                                     NL;
     const char * const readme_bdb_insert =
       "The directory \"" SVN_REPOS__DB_DIR "\" contains a Berkeley DB environment."  NL
@@ -1131,12 +1249,12 @@ create_repos_structure(svn_repos_t *repos,
       "requirements of your site."                                           NL
       ""                                                                     NL;
     const char * const readme_footer =
-      "Visit http://subversion.tigris.org/ for more information."            NL;
+      "Visit http://subversion.apache.org/ for more information."            NL;
     apr_file_t *f;
     apr_size_t written;
 
     SVN_ERR(svn_io_file_open(&f,
-                             svn_path_join(path, SVN_REPOS__README, pool),
+                             svn_dirent_join(path, SVN_REPOS__README, pool),
                              (APR_WRITE | APR_CREATE | APR_EXCL),
                              APR_OS_DEFAULT, pool));
 
@@ -1174,7 +1292,7 @@ lock_repos(svn_repos_t *repos,
 
       err = svn_io_file_lock2(lockfile_path, exclusive, nonblocking, pool);
       if (err != NULL && APR_STATUS_IS_EAGAIN(err->apr_err))
-        return err;
+        return svn_error_trace(err);
       SVN_ERR_W(err, _("Error opening db lockfile"));
     }
   return SVN_NO_ERROR;
@@ -1193,30 +1311,34 @@ svn_repos_create(svn_repos_t **repos_p,
   svn_repos_t *repos;
   svn_error_t *err;
   const char *root_path;
+  const char *local_abspath;
 
   /* Allocate a repository object, filling in the format we will create. */
   repos = create_svn_repos_t(path, pool);
   repos->format = SVN_REPOS__FORMAT_NUMBER;
 
   /* Discover the type of the filesystem we are about to create. */
-  if (fs_config)
-    {
-      repos->fs_type = apr_hash_get(fs_config, SVN_FS_CONFIG_FS_TYPE,
-                                    APR_HASH_KEY_STRING);
-      if (apr_hash_get(fs_config, SVN_FS_CONFIG_PRE_1_4_COMPATIBLE,
-                       APR_HASH_KEY_STRING))
-        repos->format = SVN_REPOS__FORMAT_NUMBER_LEGACY;
-    }
-
-  if (! repos->fs_type)
-    repos->fs_type = DEFAULT_FS_TYPE;
+  repos->fs_type = svn_hash__get_cstring(fs_config, SVN_FS_CONFIG_FS_TYPE,
+                                         DEFAULT_FS_TYPE);
+  if (svn_hash__get_bool(fs_config, SVN_FS_CONFIG_PRE_1_4_COMPATIBLE, FALSE))
+    repos->format = SVN_REPOS__FORMAT_NUMBER_LEGACY;
 
   /* Don't create a repository inside another repository. */
-  root_path = svn_repos_find_root_path(path, pool);
+  SVN_ERR(svn_dirent_get_absolute(&local_abspath, path, pool));
+  root_path = svn_repos_find_root_path(local_abspath, pool);
   if (root_path != NULL)
-    return svn_error_createf(SVN_ERR_REPOS_BAD_ARGS, NULL, _("'%s' is a "
-                              "subdirectory of an existing repository rooted "
-                              "at '%s'"), path, root_path);
+    {
+      if (strcmp(root_path, local_abspath) == 0)
+        return svn_error_createf(SVN_ERR_REPOS_BAD_ARGS, NULL,
+                                 _("'%s' is an existing repository"),
+                                 svn_dirent_local_style(root_path, pool));
+      else
+        return svn_error_createf(SVN_ERR_REPOS_BAD_ARGS, NULL,
+                                 _("'%s' is a subdirectory of an existing "
+                                   "repository " "rooted at '%s'"),
+                                 svn_dirent_local_style(local_abspath, pool),
+                                 svn_dirent_local_style(root_path, pool));
+    }
 
   /* Create the various files and subdirectories for the repository. */
   SVN_ERR_W(create_repos_structure(repos, path, fs_config, pool),
@@ -1231,14 +1353,18 @@ svn_repos_create(svn_repos_t **repos_p,
       /* If there was an error making the filesytem, e.g. unknown/supported
        * filesystem type.  Clean up after ourselves.  Yes this is safe because
        * create_repos_structure will fail if the path existed before we started
-       * so we can't accidentally remove a directory that previously existed. */
-      svn_error_clear(svn_io_remove_dir2(path, FALSE, NULL, NULL, pool));
-      return err;
+       * so we can't accidentally remove a directory that previously existed.
+       */
+
+      return svn_error_trace(
+                   svn_error_compose_create(
+                        err,
+                        svn_io_remove_dir2(path, FALSE, NULL, NULL, pool)));
     }
 
   /* This repository is ready.  Stamp it with a format number. */
   SVN_ERR(svn_io_write_version_file
-          (svn_path_join(path, SVN_REPOS__FORMAT, pool),
+          (svn_dirent_join(path, SVN_REPOS__FORMAT, pool),
            repos->format, pool));
 
   *repos_p = repos;
@@ -1258,7 +1384,7 @@ check_repos_path(const char *path,
   svn_node_kind_t kind;
   svn_error_t *err;
 
-  err = svn_io_check_path(svn_path_join(path, SVN_REPOS__FORMAT, pool),
+  err = svn_io_check_path(svn_dirent_join(path, SVN_REPOS__FORMAT, pool),
                           &kind, pool);
   if (err)
     {
@@ -1271,7 +1397,7 @@ check_repos_path(const char *path,
   /* Check the db/ subdir, but allow it to be a symlink (Subversion
      works just fine if it's a symlink). */
   err = svn_io_check_resolved_path
-    (svn_path_join(path, SVN_REPOS__DB_DIR, pool), &kind, pool);
+    (svn_dirent_join(path, SVN_REPOS__DB_DIR, pool), &kind, pool);
   if (err)
     {
       svn_error_clear(err);
@@ -1293,7 +1419,7 @@ check_repos_format(svn_repos_t *repos,
   int format;
   const char *format_path;
 
-  format_path = svn_path_join(repos->path, SVN_REPOS__FORMAT, pool);
+  format_path = svn_dirent_join(repos->path, SVN_REPOS__FORMAT, pool);
   SVN_ERR(svn_io_read_version_file(&format, format_path, pool));
 
   if (format != SVN_REPOS__FORMAT_NUMBER &&
@@ -1323,6 +1449,7 @@ get_repos(svn_repos_t **repos_p,
           svn_boolean_t exclusive,
           svn_boolean_t nonblocking,
           svn_boolean_t open_fs,
+          apr_hash_t *fs_config,
           apr_pool_t *pool)
 {
   svn_repos_t *repos;
@@ -1341,7 +1468,24 @@ get_repos(svn_repos_t **repos_p,
 
   /* Open up the filesystem only after obtaining the lock. */
   if (open_fs)
-    SVN_ERR(svn_fs_open(&repos->fs, repos->db_path, NULL, pool));
+    SVN_ERR(svn_fs_open(&repos->fs, repos->db_path, fs_config, pool));
+
+#ifdef SVN_DEBUG_CRASH_AT_REPOS_OPEN
+  /* If $PATH/config/debug-abort exists, crash the server here.
+     This debugging feature can be used to test client recovery
+     when the server crashes.
+
+     See: Issue #4274 */
+  {
+    svn_node_kind_t kind;
+    svn_error_t *err = svn_io_check_path(
+        svn_dirent_join(repos->conf_path, "debug-abort", pool),
+        &kind, pool);
+    svn_error_clear(err);
+    if (!err && kind == svn_node_file)
+      SVN_ERR_MALFUNCTION_NO_RETURN();
+  }
+#endif /* SVN_DEBUG_CRASH_AT_REPOS_OPEN */
 
   *repos_p = repos;
   return SVN_NO_ERROR;
@@ -1362,16 +1506,16 @@ svn_repos_find_root_path(const char *path,
       /* Try to decode the path, so we don't fail if it contains characters
          that aren't supported by the OS filesystem.  The subversion fs
          isn't restricted by the OS filesystem character set. */
-      err = svn_utf_cstring_from_utf8(&decoded, candidate, pool);
+      err = svn_path_cstring_from_utf8(&decoded, candidate, pool);
       if (!err && check_repos_path(candidate, pool))
         break;
       svn_error_clear(err);
 
-      if (candidate[0] == '\0' ||
+      if (svn_path_is_empty(candidate) ||
           svn_dirent_is_root(candidate, strlen(candidate)))
         return NULL;
 
-      candidate = svn_path_dirname(candidate, pool);
+      candidate = svn_dirent_dirname(candidate, pool);
     }
 
   return candidate;
@@ -1379,23 +1523,24 @@ svn_repos_find_root_path(const char *path,
 
 
 svn_error_t *
-svn_repos_open(svn_repos_t **repos_p,
-               const char *path,
-               apr_pool_t *pool)
+svn_repos_open2(svn_repos_t **repos_p,
+                const char *path,
+                apr_hash_t *fs_config,
+                apr_pool_t *pool)
 {
   /* Fetch a repository object initialized with a shared read/write
      lock on the database. */
 
-  return get_repos(repos_p, path, FALSE, FALSE, TRUE, pool);
+  return get_repos(repos_p, path, FALSE, FALSE, TRUE, fs_config, pool);
 }
 
 
 svn_error_t *
-svn_repos_upgrade(const char *path,
-                  svn_boolean_t nonblocking,
-                  svn_error_t *(*start_callback)(void *baton),
-                  void *start_callback_baton,
-                  apr_pool_t *pool)
+svn_repos_upgrade2(const char *path,
+                   svn_boolean_t nonblocking,
+                   svn_repos_notify_func_t notify_func,
+                   void *notify_baton,
+                   apr_pool_t *pool)
 {
   svn_repos_t *repos;
   const char *format_path;
@@ -1407,16 +1552,25 @@ svn_repos_upgrade(const char *path,
      least prevent others from trying to read or write to it while we
      run recovery. (Other backends should do their own locking; see
      lock_repos.) */
-  SVN_ERR(get_repos(&repos, path, TRUE, nonblocking, FALSE, subpool));
+  SVN_ERR(get_repos(&repos, path, TRUE, nonblocking, FALSE, NULL, subpool));
 
-  if (start_callback)
-    SVN_ERR(start_callback(start_callback_baton));
+  if (notify_func)
+    {
+      /* We notify *twice* here, because there are two different logistical
+         actions occuring. */
+      svn_repos_notify_t *notify = svn_repos_notify_create(
+                                    svn_repos_notify_mutex_acquired, subpool);
+      notify_func(notify_baton, notify, subpool);
+
+      notify->action = svn_repos_notify_upgrade_start;
+      notify_func(notify_baton, notify, subpool);
+    }
 
   /* Try to overwrite with its own contents.  We do this only to
      verify that we can, because we don't want to actually bump the
      format of the repository until our underlying filesystem claims
      to have been upgraded correctly. */
-  format_path = svn_path_join(repos->path, SVN_REPOS__FORMAT, subpool);
+  format_path = svn_dirent_join(repos->path, SVN_REPOS__FORMAT, subpool);
   SVN_ERR(svn_io_read_version_file(&format, format_path, subpool));
   SVN_ERR(svn_io_write_version_file(format_path, format, subpool));
 
@@ -1438,7 +1592,7 @@ svn_error_t *
 svn_repos_delete(const char *path,
                  apr_pool_t *pool)
 {
-  const char *db_path = svn_path_join(path, SVN_REPOS__DB_DIR, pool);
+  const char *db_path = svn_dirent_join(path, SVN_REPOS__DB_DIR, pool);
 
   /* Delete the filesystem environment... */
   SVN_ERR(svn_fs_delete_fs(db_path, pool));
@@ -1459,8 +1613,7 @@ svn_repos_has_capability(svn_repos_t *repos,
                          const char *capability,
                          apr_pool_t *pool)
 {
-  const char *val = apr_hash_get(repos->repository_capabilities,
-                                 capability, APR_HASH_KEY_STRING);
+  const char *val = svn_hash_gets(repos->repository_capabilities, capability);
 
   if (val == capability_yes)
     {
@@ -1481,16 +1634,16 @@ svn_repos_has_capability(svn_repos_t *repos,
 
       SVN_ERR(svn_fs_revision_root(&root, repos->fs, 0, pool));
       APR_ARRAY_PUSH(paths, const char *) = "";
-      err = svn_fs_get_mergeinfo(&ignored, root, paths, FALSE, FALSE, pool);
+      err = svn_fs_get_mergeinfo2(&ignored, root, paths, FALSE, FALSE,
+                                  TRUE, pool, pool);
 
       if (err)
         {
           if (err->apr_err == SVN_ERR_UNSUPPORTED_FEATURE)
             {
               svn_error_clear(err);
-              apr_hash_set(repos->repository_capabilities,
-                           SVN_REPOS_CAPABILITY_MERGEINFO,
-                           APR_HASH_KEY_STRING, capability_no);
+              svn_hash_sets(repos->repository_capabilities,
+                            SVN_REPOS_CAPABILITY_MERGEINFO, capability_no);
               *has = FALSE;
             }
           else if (err->apr_err == SVN_ERR_FS_NOT_FOUND)
@@ -1499,21 +1652,19 @@ svn_repos_has_capability(svn_repos_t *repos,
                  in r0, so we're likely to get this error -- but it
                  means the repository supports mergeinfo! */
               svn_error_clear(err);
-              apr_hash_set(repos->repository_capabilities,
-                           SVN_REPOS_CAPABILITY_MERGEINFO,
-                           APR_HASH_KEY_STRING, capability_yes);
+              svn_hash_sets(repos->repository_capabilities,
+                            SVN_REPOS_CAPABILITY_MERGEINFO, capability_yes);
               *has = TRUE;
             }
           else
             {
-              return err;
+              return svn_error_trace(err);
             }
         }
       else
         {
-          apr_hash_set(repos->repository_capabilities,
-                       SVN_REPOS_CAPABILITY_MERGEINFO,
-                       APR_HASH_KEY_STRING, capability_yes);
+          svn_hash_sets(repos->repository_capabilities,
+                        SVN_REPOS_CAPABILITY_MERGEINFO, capability_yes);
           *has = TRUE;
         }
     }
@@ -1525,7 +1676,6 @@ svn_repos_has_capability(svn_repos_t *repos,
 
   return SVN_NO_ERROR;
 }
-
 
 svn_fs_t *
 svn_repos_fs(svn_repos_t *repos)
@@ -1559,11 +1709,12 @@ svn_repos_fs(svn_repos_t *repos)
  */
 
 svn_error_t *
-svn_repos_recover3(const char *path,
+svn_repos_recover4(const char *path,
                    svn_boolean_t nonblocking,
-                   svn_error_t *(*start_callback)(void *baton),
-                   void *start_callback_baton,
-                   svn_cancel_func_t cancel_func, void *cancel_baton,
+                   svn_repos_notify_func_t notify_func,
+                   void *notify_baton,
+                   svn_cancel_func_t cancel_func,
+                   void * cancel_baton,
                    apr_pool_t *pool)
 {
   svn_repos_t *repos;
@@ -1576,16 +1727,106 @@ svn_repos_recover3(const char *path,
      lock_repos.) */
   SVN_ERR(get_repos(&repos, path, TRUE, nonblocking,
                     FALSE,    /* don't try to open the db yet. */
+                    NULL,
                     subpool));
 
-  if (start_callback)
-    SVN_ERR(start_callback(start_callback_baton));
+  if (notify_func)
+    {
+      /* We notify *twice* here, because there are two different logistical
+         actions occuring. */
+      svn_repos_notify_t *notify = svn_repos_notify_create(
+                                    svn_repos_notify_mutex_acquired, subpool);
+      notify_func(notify_baton, notify, subpool);
+
+      notify->action = svn_repos_notify_recover_start;
+      notify_func(notify_baton, notify, subpool);
+    }
 
   /* Recover the database to a consistent state. */
   SVN_ERR(svn_fs_recover(repos->db_path, cancel_func, cancel_baton, subpool));
 
   /* Close shop and free the subpool, to release the exclusive lock. */
   svn_pool_destroy(subpool);
+
+  return SVN_NO_ERROR;
+}
+
+struct freeze_baton_t {
+  apr_array_header_t *paths;
+  int counter;
+  svn_repos_freeze_func_t freeze_func;
+  void *freeze_baton;
+};
+
+static svn_error_t *
+multi_freeze(void *baton,
+             apr_pool_t *pool)
+{
+  struct freeze_baton_t *fb = baton;
+
+  if (fb->counter == fb->paths->nelts)
+    {
+      SVN_ERR(fb->freeze_func(fb->freeze_baton, pool));
+      return SVN_NO_ERROR;
+    }
+  else
+    {
+      /* Using a subpool as the only way to unlock the repos lock used
+         by BDB is to clear the pool used to take the lock. */
+      apr_pool_t *subpool = svn_pool_create(pool);
+      const char *path = APR_ARRAY_IDX(fb->paths, fb->counter, const char *);
+      svn_repos_t *repos;
+
+      ++fb->counter;
+
+      SVN_ERR(get_repos(&repos, path,
+                        TRUE  /* exclusive (only applies to BDB) */,
+                        FALSE /* non-blocking */,
+                        FALSE /* open-fs */,
+                        NULL, subpool));
+
+
+      if (strcmp(repos->fs_type, SVN_FS_TYPE_BDB) == 0)
+        {
+          svn_error_t *err = multi_freeze(fb, subpool);
+
+          svn_pool_destroy(subpool);
+
+          return err;
+        }
+      else
+        {
+          SVN_ERR(svn_fs_open(&repos->fs, repos->db_path, NULL, subpool));
+          SVN_ERR(svn_fs_freeze(svn_repos_fs(repos), multi_freeze, fb,
+                                subpool));
+        }
+
+      svn_pool_destroy(subpool);
+    }
+
+  return SVN_NO_ERROR;
+}
+
+/* For BDB we fall back on BDB's repos layer lock which means that the
+   repository is unreadable while frozen.
+
+   For FSFS we delegate to the FS layer which uses the FSFS write-lock
+   and an SQLite reserved lock which means the repository is readable
+   while frozen. */
+svn_error_t *
+svn_repos_freeze(apr_array_header_t *paths,
+                 svn_repos_freeze_func_t freeze_func,
+                 void *freeze_baton,
+                 apr_pool_t *pool)
+{
+  struct freeze_baton_t fb;
+
+  fb.paths = paths;
+  fb.counter = 0;
+  fb.freeze_func = freeze_func;
+  fb.freeze_baton = freeze_baton;
+
+  SVN_ERR(multi_freeze(&fb, pool));
 
   return SVN_NO_ERROR;
 }
@@ -1601,6 +1842,7 @@ svn_error_t *svn_repos_db_logfiles(apr_array_header_t **logfiles,
   SVN_ERR(get_repos(&repos, path,
                     FALSE, FALSE,
                     FALSE,     /* Do not open fs. */
+                    NULL,
                     pool));
 
   SVN_ERR(svn_fs_berkeley_logfiles(logfiles,
@@ -1612,36 +1854,43 @@ svn_error_t *svn_repos_db_logfiles(apr_array_header_t **logfiles,
   for (i = 0; i < (*logfiles)->nelts; i++)
     {
       const char ** log_file = &(APR_ARRAY_IDX(*logfiles, i, const char *));
-      *log_file = svn_path_join(SVN_REPOS__DB_DIR, *log_file, pool);
+      *log_file = svn_dirent_join(SVN_REPOS__DB_DIR, *log_file, pool);
     }
 
   return SVN_NO_ERROR;
 }
 
-/** Hot copy structure copy context.
- */
+/* Baton for hotcopy_structure(). */
 struct hotcopy_ctx_t {
   const char *dest;     /* target location to construct */
-  unsigned int src_len; /* len of the source path*/
+  size_t src_len; /* len of the source path*/
+
+  /* As in svn_repos_hotcopy2() */
+  svn_boolean_t incremental;
+  svn_cancel_func_t cancel_func;
+  void *cancel_baton;
 };
 
-/** Called by (svn_io_dir_walk).
- * Copies the repository structure with exception of @c SVN_REPOS__DB_DIR,
- * @c SVN_REPOS__LOCK_DIR and @c SVN_REPOS__FORMAT.
- * Those directories and files are handled separetly.
- * @a baton is a pointer to (struct hotcopy_ctx_t) specifying
- * destination path to copy to and the length of the source path.
+/* Copy the repository structure of PATH to BATON->DEST, with exception of
+ * @c SVN_REPOS__DB_DIR, @c SVN_REPOS__LOCK_DIR and @c SVN_REPOS__FORMAT;
+ * those directories and files are handled separately.
  *
- * @copydoc svn_io_dir_walk()
+ * BATON is a (struct hotcopy_ctx_t *).  BATON->SRC_LEN is the length
+ * of PATH.
+ *
+ * Implements svn_io_walk_func_t.
  */
 static svn_error_t *hotcopy_structure(void *baton,
                                       const char *path,
                                       const apr_finfo_t *finfo,
                                       apr_pool_t *pool)
 {
-  const struct hotcopy_ctx_t *ctx = ((struct hotcopy_ctx_t *) baton);
+  const struct hotcopy_ctx_t *ctx = baton;
   const char *sub_path;
   const char *target;
+
+  if (ctx->cancel_func)
+    SVN_ERR(ctx->cancel_func(ctx->cancel_baton));
 
   if (strlen(path) == ctx->src_len)
     {
@@ -1653,27 +1902,40 @@ static svn_error_t *hotcopy_structure(void *baton,
 
       /* Check if we are inside db directory and if so skip it */
       if (svn_path_compare_paths
-          (svn_path_get_longest_ancestor(SVN_REPOS__DB_DIR, sub_path, pool),
+          (svn_dirent_get_longest_ancestor(SVN_REPOS__DB_DIR, sub_path, pool),
            SVN_REPOS__DB_DIR) == 0)
         return SVN_NO_ERROR;
 
       if (svn_path_compare_paths
-          (svn_path_get_longest_ancestor(SVN_REPOS__LOCK_DIR, sub_path, pool),
+          (svn_dirent_get_longest_ancestor(SVN_REPOS__LOCK_DIR, sub_path,
+                                           pool),
            SVN_REPOS__LOCK_DIR) == 0)
         return SVN_NO_ERROR;
 
       if (svn_path_compare_paths
-          (svn_path_get_longest_ancestor(SVN_REPOS__FORMAT, sub_path, pool),
+          (svn_dirent_get_longest_ancestor(SVN_REPOS__FORMAT, sub_path, pool),
            SVN_REPOS__FORMAT) == 0)
         return SVN_NO_ERROR;
     }
 
-  target = svn_path_join(ctx->dest, sub_path, pool);
+  target = svn_dirent_join(ctx->dest, sub_path, pool);
 
   if (finfo->filetype == APR_DIR)
-    return create_repos_dir(target, pool);
+    {
+      svn_error_t *err;
+
+      err = create_repos_dir(target, pool);
+      if (ctx->incremental && err && err->apr_err == SVN_ERR_DIR_NOT_EMPTY)
+        {
+          svn_error_clear(err);
+          err = SVN_NO_ERROR;
+        }
+      return svn_error_trace(err);
+    }
   else if (finfo->filetype == APR_REG)
     return svn_io_copy_file(path, target, TRUE, pool);
+  else if (finfo->filetype == APR_LNK)
+    return svn_io_copy_link(path, target, pool);
   else
     return SVN_NO_ERROR;
 }
@@ -1698,19 +1960,32 @@ lock_db_logs_file(svn_repos_t *repos,
 
 /* Make a copy of a repository with hot backup of fs. */
 svn_error_t *
-svn_repos_hotcopy(const char *src_path,
-                  const char *dst_path,
-                  svn_boolean_t clean_logs,
-                  apr_pool_t *pool)
+svn_repos_hotcopy2(const char *src_path,
+                   const char *dst_path,
+                   svn_boolean_t clean_logs,
+                   svn_boolean_t incremental,
+                   svn_cancel_func_t cancel_func,
+                   void *cancel_baton,
+                   apr_pool_t *pool)
 {
   svn_repos_t *src_repos;
   svn_repos_t *dst_repos;
   struct hotcopy_ctx_t hotcopy_context;
+  svn_error_t *err;
+  const char *src_abspath;
+  const char *dst_abspath;
+
+  SVN_ERR(svn_dirent_get_absolute(&src_abspath, src_path, pool));
+  SVN_ERR(svn_dirent_get_absolute(&dst_abspath, dst_path, pool));
+  if (strcmp(src_abspath, dst_abspath) == 0)
+    return svn_error_create(SVN_ERR_INCORRECT_PARAMS, NULL,
+                             _("Hotcopy source and destination are equal"));
 
   /* Try to open original repository */
-  SVN_ERR(get_repos(&src_repos, src_path,
+  SVN_ERR(get_repos(&src_repos, src_abspath,
                     FALSE, FALSE,
                     FALSE,    /* don't try to open the db yet. */
+                    NULL,
                     pool));
 
   /* If we are going to clean logs, then get an exclusive lock on
@@ -1724,36 +1999,64 @@ svn_repos_hotcopy(const char *src_path,
   /* Copy the repository to a new path, with exception of
      specially handled directories */
 
-  hotcopy_context.dest = dst_path;
-  hotcopy_context.src_len = strlen(src_path);
-  SVN_ERR(svn_io_dir_walk(src_path,
-                          0,
-                          hotcopy_structure,
-                          &hotcopy_context,
-                          pool));
+  hotcopy_context.dest = dst_abspath;
+  hotcopy_context.src_len = strlen(src_abspath);
+  hotcopy_context.incremental = incremental;
+  hotcopy_context.cancel_func = cancel_func;
+  hotcopy_context.cancel_baton = cancel_baton;
+  SVN_ERR(svn_io_dir_walk2(src_abspath,
+                           0,
+                           hotcopy_structure,
+                           &hotcopy_context,
+                           pool));
 
   /* Prepare dst_repos object so that we may create locks,
      so that we may open repository */
 
-  dst_repos = create_svn_repos_t(dst_path, pool);
+  dst_repos = create_svn_repos_t(dst_abspath, pool);
   dst_repos->fs_type = src_repos->fs_type;
   dst_repos->format = src_repos->format;
 
-  SVN_ERR(create_locks(dst_repos, pool));
+  err = create_locks(dst_repos, pool);
+  if (err)
+    {
+      if (incremental && err->apr_err == SVN_ERR_DIR_NOT_EMPTY)
+        svn_error_clear(err);
+      else
+        return svn_error_trace(err);
+    }
 
-  SVN_ERR(svn_io_dir_make_sgid(dst_repos->db_path, APR_OS_DEFAULT, pool));
+  err = svn_io_dir_make_sgid(dst_repos->db_path, APR_OS_DEFAULT, pool);
+  if (err)
+    {
+      if (incremental && APR_STATUS_IS_EEXIST(err->apr_err))
+        svn_error_clear(err);
+      else
+        return svn_error_trace(err);
+    }
 
   /* Exclusively lock the new repository.
      No one should be accessing it at the moment */
   SVN_ERR(lock_repos(dst_repos, TRUE, FALSE, pool));
 
-  SVN_ERR(svn_fs_hotcopy(src_repos->db_path, dst_repos->db_path,
-                         clean_logs, pool));
+  SVN_ERR(svn_fs_hotcopy2(src_repos->db_path, dst_repos->db_path,
+                          clean_logs, incremental,
+                          cancel_func, cancel_baton, pool));
 
   /* Destination repository is ready.  Stamp it with a format number. */
   return svn_io_write_version_file
-          (svn_path_join(dst_repos->path, SVN_REPOS__FORMAT, pool),
+          (svn_dirent_join(dst_repos->path, SVN_REPOS__FORMAT, pool),
            dst_repos->format, pool);
+}
+
+svn_error_t *
+svn_repos_hotcopy(const char *src_path,
+                  const char *dst_path,
+                  svn_boolean_t clean_logs,
+                  apr_pool_t *pool)
+{
+  return svn_error_trace(svn_repos_hotcopy2(src_path, dst_path, clean_logs,
+                                            FALSE, NULL, NULL, pool));
 }
 
 /* Return the library version number. */
@@ -1784,7 +2087,7 @@ svn_repos_stat(svn_dirent_t **dirent,
       return SVN_NO_ERROR;
     }
 
-  ent = apr_pcalloc(pool, sizeof(*ent));
+  ent = svn_dirent_create(pool);
   ent->kind = kind;
 
   if (kind == svn_node_file)
@@ -1807,9 +2110,23 @@ svn_repos_stat(svn_dirent_t **dirent,
 
 svn_error_t *
 svn_repos_remember_client_capabilities(svn_repos_t *repos,
-                                       apr_array_header_t *capabilities)
+                                       const apr_array_header_t *capabilities)
 {
   repos->client_capabilities = capabilities;
   return SVN_NO_ERROR;
 }
 
+svn_error_t *
+svn_repos__fs_type(const char **fs_type,
+                   const char *repos_path,
+                   apr_pool_t *pool)
+{
+  svn_repos_t repos;
+  repos.path = (char*)repos_path;
+
+  SVN_ERR(check_repos_format(&repos, pool));
+
+  return svn_fs_type(fs_type,
+                     svn_dirent_join(repos_path, SVN_REPOS__DB_DIR, pool),
+                     pool);
+}

@@ -1,24 +1,32 @@
 /* skel.c --- parsing and unparsing skeletons
  *
  * ====================================================================
- * Copyright (c) 2000-2004 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
 #include <string.h>
 #include "svn_string.h"
 #include "svn_error.h"
+#include "svn_props.h"
+#include "svn_pools.h"
 #include "private/svn_skel.h"
+#include "private/svn_string_private.h"
 
 
 /* Parsing skeletons.  */
@@ -64,6 +72,8 @@ static const enum char_type skel_char_type[256] = {
 
 
 /* ### WTF? since when is number conversion LOCALE DEPENDENT? */
+/* stsp: In C99, various numerical string properties such as decimal point,
+ * thousands separator, and the plus/minus sign are locale dependent. */
 
 /* Converting text to numbers.  */
 
@@ -128,41 +138,6 @@ getsize(const char *data, apr_size_t len,
     }
 }
 
-/* Store the ASCII decimal representation of VALUE at DATA.  Return
-   the length of the representation if all goes well; return zero if
-   the result doesn't fit in LEN bytes.  */
-static int
-putsize(char *data, apr_size_t len, apr_size_t value)
-{
-  apr_size_t i = 0;
-
-  /* Generate the digits, least-significant first.  */
-  do
-    {
-      if (i >= len)
-        return 0;
-
-      data[i] = (value % 10) + '0';
-      value /= 10;
-      i++;
-    }
-  while (value > 0);
-
-  /* Put the digits in most-significant-first order.  */
-  {
-    int left, right;
-
-    for (left = 0, right = i-1; left < right; left++, right--)
-      {
-        char t = data[left];
-        data[left] = data[right];
-        data[right] = t;
-      }
-  }
-
-  return i;
-}
-
 
 /* Checking validity of skels. */
 static svn_error_t *
@@ -176,7 +151,7 @@ skel_err(const char *skel_type)
 
 
 static svn_boolean_t
-is_valid_proplist_skel(svn_skel_t *skel)
+is_valid_proplist_skel(const svn_skel_t *skel)
 {
   int len = svn_skel__list_length(skel);
 
@@ -187,6 +162,35 @@ is_valid_proplist_skel(svn_skel_t *skel)
       for (elt = skel->children; elt; elt = elt->next)
         if (! elt->is_atom)
           return FALSE;
+
+      return TRUE;
+    }
+
+  return FALSE;
+}
+
+static svn_boolean_t
+is_valid_iproplist_skel(const svn_skel_t *skel)
+{
+  int len = svn_skel__list_length(skel);
+
+  if ((len >= 0) && (len & 1) == 0)
+    {
+      svn_skel_t *elt;
+
+      for (elt = skel->children; elt; elt = elt->next)
+        {
+          if (!elt->is_atom)
+            return FALSE;
+
+          if (elt->next == NULL)
+            return FALSE;
+
+          elt = elt->next;
+
+          if (! is_valid_proplist_skel(elt))
+            return FALSE;
+        }
 
       return TRUE;
     }
@@ -394,23 +398,16 @@ explicit_atom(const char *data,
 
 static apr_size_t estimate_unparsed_size(const svn_skel_t *skel);
 static svn_stringbuf_t *unparse(const svn_skel_t *skel,
-                                svn_stringbuf_t *str,
-                                apr_pool_t *pool);
+                                svn_stringbuf_t *str);
 
 
 svn_stringbuf_t *
 svn_skel__unparse(const svn_skel_t *skel, apr_pool_t *pool)
 {
-  svn_stringbuf_t *str;
+  svn_stringbuf_t *str
+    = svn_stringbuf_create_ensure(estimate_unparsed_size(skel) + 200, pool);
 
-  /* Allocate a string to hold the data.  */
-  str = apr_palloc(pool, sizeof(*str));
-  str->pool = pool;
-  str->blocksize = estimate_unparsed_size(skel) + 200;
-  str->data = apr_palloc(pool, str->blocksize);
-  str->len = 0;
-
-  return unparse(skel, str, pool);
+  return unparse(skel, str);
 }
 
 
@@ -433,7 +430,7 @@ estimate_unparsed_size(const svn_skel_t *skel)
     }
   else
     {
-      int total_len;
+      apr_size_t total_len;
       svn_skel_t *child;
 
       /* Allow space for opening and closing parens, and a space
@@ -479,10 +476,9 @@ use_implicit(const svn_skel_t *skel)
 }
 
 
-/* Append the concrete representation of SKEL to the string STR.
-   Grow S with new space from POOL as necessary.  */
+/* Append the concrete representation of SKEL to the string STR. */
 static svn_stringbuf_t *
-unparse(const svn_skel_t *skel, svn_stringbuf_t *str, apr_pool_t *pool)
+unparse(const svn_skel_t *skel, svn_stringbuf_t *str)
 {
   if (skel->is_atom)
     {
@@ -491,11 +487,12 @@ unparse(const svn_skel_t *skel, svn_stringbuf_t *str, apr_pool_t *pool)
         svn_stringbuf_appendbytes(str, skel->data, skel->len);
       else
         {
-          /* Append the length to STR.  */
-          char buf[200];
-          int length_len;
+          /* Append the length to STR.  Ensure enough space for at least
+           * one 64 bit int. */
+          char buf[200 + SVN_INT64_BUFFER_SIZE];
+          apr_size_t length_len;
 
-          length_len = putsize(buf, sizeof(buf), skel->len);
+          length_len = svn__ui64toa(buf, skel->len);
 
           SVN_ERR_ASSERT_NO_RETURN(length_len > 0);
 
@@ -503,32 +500,26 @@ unparse(const svn_skel_t *skel, svn_stringbuf_t *str, apr_pool_t *pool)
              atom's contents.  */
           svn_stringbuf_ensure(str, str->len + length_len + 1 + skel->len);
           svn_stringbuf_appendbytes(str, buf, length_len);
-          str->data[str->len++] = ' ';
+          svn_stringbuf_appendbyte(str, ' ');
           svn_stringbuf_appendbytes(str, skel->data, skel->len);
         }
     }
   else
     {
-      /* Append a list to STR.  */
+      /* Append a list to STR: an opening parenthesis, the list elements
+       * separated by a space, and a closing parenthesis.  */
       svn_skel_t *child;
 
-      /* Emit an opening parenthesis.  */
-      svn_stringbuf_ensure(str, str->len + 1);
-      str->data[str->len++] = '(';
+      svn_stringbuf_appendbyte(str, '(');
 
-      /* Append each element.  Emit a space between each pair of elements.  */
       for (child = skel->children; child; child = child->next)
         {
-          unparse(child, str, pool);
+          unparse(child, str);
           if (child->next)
-            {
-              svn_stringbuf_ensure(str, str->len + 1);
-              str->data[str->len++] = ' ';
-            }
+            svn_stringbuf_appendbyte(str, ' ');
         }
 
-      /* Emit a closing parenthesis.  */
-      svn_stringbuf_appendbytes(str, ")", 1);
+      svn_stringbuf_appendbyte(str, ')');
     }
 
   return str;
@@ -572,6 +563,33 @@ svn_skel__make_empty_list(apr_pool_t *pool)
   return skel;
 }
 
+svn_skel_t *svn_skel__dup(const svn_skel_t *src_skel, svn_boolean_t dup_data,
+                          apr_pool_t *result_pool)
+{
+  svn_skel_t *skel = apr_pmemdup(result_pool, src_skel, sizeof(svn_skel_t));
+
+  if (dup_data && skel->data)
+    {
+      if (skel->is_atom)
+        skel->data = apr_pmemdup(result_pool, skel->data, skel->len);
+      else
+        {
+          /* When creating a skel this would be NULL, 0 for a list.
+             When parsing a string to a skel this might point to real data
+             delimiting the sublist. We don't copy that from here. */
+          skel->data = NULL;
+          skel->len = 0;
+        }
+    }
+
+  if (skel->children)
+    skel->children = svn_skel__dup(skel->children, dup_data, result_pool);
+
+  if (skel->next)
+    skel->next = svn_skel__dup(skel->next, dup_data, result_pool);
+
+  return skel;
+}
 
 void
 svn_skel__prepend(svn_skel_t *skel, svn_skel_t *list_skel)
@@ -584,6 +602,44 @@ svn_skel__prepend(svn_skel_t *skel, svn_skel_t *list_skel)
   list_skel->children = skel;
 }
 
+
+void svn_skel__prepend_int(apr_int64_t value,
+                           svn_skel_t *skel,
+                           apr_pool_t *result_pool)
+{
+  char *val_string = apr_palloc(result_pool, SVN_INT64_BUFFER_SIZE);
+  svn__i64toa(val_string, value);
+
+  svn_skel__prepend_str(val_string, skel, result_pool);
+}
+
+
+void svn_skel__prepend_str(const char *value,
+                           svn_skel_t *skel,
+                           apr_pool_t *result_pool)
+{
+  svn_skel_t *atom = svn_skel__str_atom(value, result_pool);
+
+  svn_skel__prepend(atom, skel);
+}
+
+
+void svn_skel__append(svn_skel_t *list_skel, svn_skel_t *skel)
+{
+  SVN_ERR_ASSERT_NO_RETURN(list_skel != NULL && !list_skel->is_atom);
+
+  if (list_skel->children == NULL)
+    {
+      list_skel->children = skel;
+    }
+  else
+    {
+      list_skel = list_skel->children;
+      while (list_skel->next != NULL)
+        list_skel = list_skel->next;
+      list_skel->next = skel;
+    }
+}
 
 
 /* Examining skels.  */
@@ -622,11 +678,23 @@ svn_skel__list_length(const svn_skel_t *skel)
 
 /* Parsing and unparsing into high-level types. */
 
+svn_error_t *
+svn_skel__parse_int(apr_int64_t *n, const svn_skel_t *skel,
+                    apr_pool_t *scratch_pool)
+{
+  const char *str;
+
+  /* We need to duplicate the SKEL contents in order to get a NUL-terminated
+     version of it. The SKEL may not have valid memory at DATA[LEN].  */
+  str = apr_pstrmemdup(scratch_pool, skel->data, skel->len);
+  return svn_error_trace(svn_cstring_atoi64(n, str));
+}
+
 
 svn_error_t *
 svn_skel__parse_proplist(apr_hash_t **proplist_p,
-                         svn_skel_t *skel,
-                         apr_pool_t *pool)
+                         const svn_skel_t *skel,
+                         apr_pool_t *pool /* result_pool */)
 {
   apr_hash_t *proplist = NULL;
   svn_skel_t *elt;
@@ -636,8 +704,7 @@ svn_skel__parse_proplist(apr_hash_t **proplist_p,
     return skel_err("proplist");
 
   /* Create the returned structure */
-  if (skel->children)
-    proplist = apr_hash_make(pool);
+  proplist = apr_hash_make(pool);
   for (elt = skel->children; elt; elt = elt->next->next)
     {
       svn_string_t *value = svn_string_ncreate(elt->next->data,
@@ -653,10 +720,71 @@ svn_skel__parse_proplist(apr_hash_t **proplist_p,
   return SVN_NO_ERROR;
 }
 
+svn_error_t *
+svn_skel__parse_iprops(apr_array_header_t **iprops,
+                       const svn_skel_t *skel,
+                       apr_pool_t *result_pool)
+{
+  svn_skel_t *elt;
+
+  /* Validate the skel. */
+  if (! is_valid_iproplist_skel(skel))
+    return skel_err("iprops");
+
+  /* Create the returned structure */
+  *iprops = apr_array_make(result_pool, 1,
+                           sizeof(svn_prop_inherited_item_t *));
+
+  for (elt = skel->children; elt; elt = elt->next->next)
+    {
+      svn_prop_inherited_item_t *new_iprop = apr_palloc(result_pool,
+                                                        sizeof(*new_iprop));
+      svn_string_t *repos_parent = svn_string_ncreate(elt->data, elt->len,
+                                                      result_pool);
+      SVN_ERR(svn_skel__parse_proplist(&(new_iprop->prop_hash), elt->next,
+                                       result_pool));
+      new_iprop->path_or_url = repos_parent->data;
+      APR_ARRAY_PUSH(*iprops, svn_prop_inherited_item_t *) = new_iprop;
+    }
+  return SVN_NO_ERROR;
+}
+
+svn_error_t *
+svn_skel__parse_prop(svn_string_t **propval,
+                     const svn_skel_t *skel,
+                     const char *propname,
+                     apr_pool_t *pool /* result_pool */)
+{
+  svn_skel_t *elt;
+
+  *propval = NULL;
+
+  /* Validate the skel. */
+  if (! is_valid_proplist_skel(skel))
+    return skel_err("proplist");
+
+  /* Look for PROPNAME in SKEL. */
+  for (elt = skel->children; elt; elt = elt->next->next)
+    {
+      if (elt->len == strlen(propname)
+          && strncmp(propname, elt->data, elt->len) == 0)
+        {
+          *propval = svn_string_ncreate(elt->next->data, elt->next->len,
+                                        pool);
+          break;
+        }
+      else
+        {
+          continue;
+        }
+    }
+  return SVN_NO_ERROR;
+}
+
 
 svn_error_t *
 svn_skel__unparse_proplist(svn_skel_t **skel_p,
-                           apr_hash_t *proplist,
+                           const apr_hash_t *proplist,
                            apr_pool_t *pool)
 {
   svn_skel_t *skel = svn_skel__make_empty_list(pool);
@@ -666,7 +794,8 @@ svn_skel__unparse_proplist(svn_skel_t **skel_p,
   if (proplist)
     {
       /* Loop over hash entries */
-      for (hi = apr_hash_first(pool, proplist); hi; hi = apr_hash_next(hi))
+      for (hi = apr_hash_first(pool, (apr_hash_t *)proplist); hi;
+           hi = apr_hash_next(hi))
         {
           const void *key;
           void *val;
@@ -688,6 +817,65 @@ svn_skel__unparse_proplist(svn_skel_t **skel_p,
   /* Validate and return the skel. */
   if (! is_valid_proplist_skel(skel))
     return skel_err("proplist");
+  *skel_p = skel;
+  return SVN_NO_ERROR;
+}
+
+svn_error_t *
+svn_skel__unparse_iproplist(svn_skel_t **skel_p,
+                            const apr_array_header_t *inherited_props,
+                            apr_pool_t *result_pool,
+                            apr_pool_t *scratch_pool)
+{
+  svn_skel_t *skel = svn_skel__make_empty_list(result_pool);
+
+  /* Create the skel. */
+  if (inherited_props)
+    {
+      int i;
+      apr_hash_index_t *hi;
+
+      for (i = 0; i < inherited_props->nelts; i++)
+        {
+          svn_prop_inherited_item_t *iprop =
+            APR_ARRAY_IDX(inherited_props, i, svn_prop_inherited_item_t *);
+
+          svn_skel_t *skel_list = svn_skel__make_empty_list(result_pool);
+          svn_skel_t *skel_atom;
+
+          /* Loop over hash entries */
+          for (hi = apr_hash_first(scratch_pool, iprop->prop_hash);
+               hi;
+               hi = apr_hash_next(hi))
+            {
+              const void *key;
+              void *val;
+              apr_ssize_t klen;
+              svn_string_t *value;
+
+              apr_hash_this(hi, &key, &klen, &val);
+              value = val;
+
+              /* VALUE */
+              svn_skel__prepend(svn_skel__mem_atom(value->data, value->len,
+                                                   result_pool), skel_list);
+
+              /* NAME */
+              svn_skel__prepend(svn_skel__mem_atom(key, klen, result_pool),
+                                skel_list);
+            }
+
+          skel_atom = svn_skel__str_atom(
+            apr_pstrdup(result_pool, iprop->path_or_url), result_pool);
+          svn_skel__append(skel, skel_atom);
+          svn_skel__append(skel, skel_list);
+        }
+    }
+
+  /* Validate and return the skel. */
+  if (! is_valid_iproplist_skel(skel))
+    return skel_err("iproplist");
+
   *skel_p = skel;
   return SVN_NO_ERROR;
 }

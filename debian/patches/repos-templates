@@ -1,11 +1,11 @@
-#! /bin/sh /usr/share/dpatch/dpatch-run
-##
-## repos-templates by <dwhedon@debian.org>
+Bug #210901: Add fully qualified paths to commands in example hook
+scripts that get installed as .tmpl files in new repositories.  Use
+$REPOS/hooks/ as the path, to encourage repository admins to copy the
+hooks, not just use them in place.
 
-@DPATCH@
 --- a/subversion/libsvn_repos/repos.c
 +++ b/subversion/libsvn_repos/repos.c
-@@ -266,7 +266,7 @@
+@@ -276,7 +276,7 @@
  
  #define PREWRITTEN_HOOKS_TEXT                                                 \
    "# For more examples and pre-written hooks, see those in"                NL \
@@ -14,7 +14,7 @@
    "# http://svn.apache.org/repos/asf/subversion/trunk/tools/hook-scripts/ and"        NL \
    "# http://svn.apache.org/repos/asf/subversion/trunk/contrib/hook-scripts/"          NL
  
-@@ -345,8 +345,11 @@
+@@ -361,8 +361,11 @@
  "REPOS=\"$1\""                                                               NL
  "USER=\"$2\""                                                                NL
  ""                                                                           NL
@@ -28,7 +28,7 @@
  ""                                                                           NL
  "# All checks passed, so allow the commit."                                  NL
  "exit 0"                                                                     NL;
-@@ -433,10 +436,13 @@
+@@ -451,10 +454,13 @@
  "$SVNLOOK log -t \"$TXN\" \"$REPOS\" | \\"                                   NL
  "   grep \"[a-zA-Z0-9]\" > /dev/null || exit 1"                              NL
  ""                                                                           NL
@@ -44,16 +44,16 @@
  ""                                                                           NL
  "# All checks passed, so allow the commit."                                  NL
  "exit 0"                                                                     NL;
-@@ -743,7 +749,7 @@
- "REPOS=\"$1\""                                                               NL
+@@ -775,7 +781,7 @@
  "REV=\"$2\""                                                                 NL
+ "TXN_NAME=\"$3\""                                                            NL
                                                                               NL
 -"mailer.py commit \"$REPOS\" \"$REV\" /path/to/mailer.conf"                  NL;
 +"\"$REPOS\"/hooks/mailer.py commit \"$REPOS\" $REV \"$REPOS\"/mailer.conf"   NL;
  
  #undef SCRIPT_NAME
  
-@@ -804,7 +810,8 @@
+@@ -838,7 +844,8 @@
  "USER=\"$2\""                                                                NL
  ""                                                                           NL
  "# Send email to interested parties, let them know a lock was created:"      NL
@@ -63,7 +63,7 @@
  
  #undef SCRIPT_NAME
  
-@@ -863,7 +870,8 @@
+@@ -899,7 +906,8 @@
  "USER=\"$2\""                                                                NL
  ""                                                                           NL
  "# Send email to interested parties, let them know a lock was removed:"      NL
@@ -73,7 +73,7 @@
  
  #undef SCRIPT_NAME
  
-@@ -928,8 +936,8 @@
+@@ -966,8 +974,8 @@
  "PROPNAME=\"$4\""                                                            NL
  "ACTION=\"$5\""                                                              NL
  ""                                                                           NL

@@ -1,17 +1,22 @@
-/* id.h : interface to node ID functions, private to libsvn_fs_fs
+/* rep-cache.h : interface to rep cache db functions
  *
  * ====================================================================
- * Copyright (c) 2008 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -35,6 +40,25 @@ svn_error_t *
 svn_fs_fs__open_rep_cache(svn_fs_t *fs,
                           apr_pool_t *pool);
 
+/* Set *EXISTS to TRUE iff the rep-cache DB file exists. */
+svn_error_t *
+svn_fs_fs__exists_rep_cache(svn_boolean_t *exists,
+                            svn_fs_t *fs, apr_pool_t *pool);
+
+/* Iterate all representations currently in FS's cache. */
+svn_error_t *
+svn_fs_fs__walk_rep_reference(svn_fs_t *fs,
+                              svn_revnum_t start,
+                              svn_revnum_t end,
+                              svn_error_t *(*walker)(representation_t *rep,
+                                                     void *walker_baton,
+                                                     svn_fs_t *fs,
+                                                     apr_pool_t *scratch_pool),
+                              void *walker_baton,
+                              svn_cancel_func_t cancel_func,
+                              void *cancel_baton,
+                              apr_pool_t *pool);
+
 /* Return the representation REP in FS which has fulltext CHECKSUM.
    REP is allocated in POOL.  If the rep cache database has not been
    opened, just set *REP to NULL. */
@@ -56,6 +80,19 @@ svn_fs_fs__set_rep_reference(svn_fs_t *fs,
                              representation_t *rep,
                              svn_boolean_t reject_dup,
                              apr_pool_t *pool);
+
+/* Delete from the cache all reps corresponding to revisions younger
+   than YOUNGEST. */
+svn_error_t *
+svn_fs_fs__del_rep_reference(svn_fs_t *fs,
+                             svn_revnum_t youngest,
+                             apr_pool_t *pool);
+
+/* Start a transaction to take an SQLite reserved lock that prevents
+   other writes. */
+svn_error_t *
+svn_fs_fs__lock_rep_cache(svn_fs_t *fs,
+                          apr_pool_t *pool);
 
 #ifdef __cplusplus
 }

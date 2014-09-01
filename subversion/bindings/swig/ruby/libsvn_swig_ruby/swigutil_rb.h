@@ -1,3 +1,24 @@
+/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
+
 #ifndef SVN_SWIG_SWIGUTIL_RB_H
 #define SVN_SWIG_SWIGUTIL_RB_H
 
@@ -53,7 +74,12 @@
 extern "C" {
 #endif /* __cplusplus */
 
+/* Ruby 1.9 changed the file name of this header */
+#ifdef HAVE_RUBY_IO_H
+#include <ruby/io.h>
+#else
 #include <rubyio.h>
+#endif
 
 typedef struct apr_pool_wrapper_t
 {
@@ -91,7 +117,7 @@ SVN_RB_SWIG_SWIGUTIL_EXPORT
 void svn_swig_rb_handle_svn_error(svn_error_t *error);
 
 SVN_RB_SWIG_SWIGUTIL_EXPORT
-void *svn_swig_rb_to_swig_type(VALUE value, void *ctx, apr_pool_t *pool);
+void *svn_swig_rb_to_swig_type(VALUE value, const void *ctx, apr_pool_t *pool);
 SVN_RB_SWIG_SWIGUTIL_EXPORT
 VALUE svn_swig_rb_from_swig_type(void *value, void *ctx);
 
@@ -133,6 +159,8 @@ SVN_RB_SWIG_SWIGUTIL_EXPORT
 VALUE svn_swig_rb_apr_array_to_array_external_item2(const apr_array_header_t *ary);
 SVN_RB_SWIG_SWIGUTIL_EXPORT
 VALUE svn_swig_rb_apr_array_to_array_merge_range(const apr_array_header_t *ary);
+SVN_RB_SWIG_SWIGUTIL_EXPORT
+VALUE svn_swig_rb_apr_array_to_array_auth_provider_object(const apr_array_header_t *ary);
 
 SVN_RB_SWIG_SWIGUTIL_EXPORT
 VALUE svn_swig_rb_prop_apr_array_to_hash_prop(const apr_array_header_t *ary);
@@ -356,6 +384,13 @@ svn_error_t *svn_swig_rb_wc_relocation_validator3(void *baton,
 
 
 /* auth provider callbacks */
+SVN_RB_SWIG_SWIGUTIL_EXPORT
+svn_error_t * svn_swig_rb_auth_gnome_keyring_unlock_prompt_func(
+    char **keyring_passwd,
+    const char *keyring_name,
+    void *baton,
+    apr_pool_t *pool);
+
 SVN_RB_SWIG_SWIGUTIL_EXPORT
 svn_error_t *svn_swig_rb_auth_simple_prompt_func(
     svn_auth_cred_simple_t **cred,

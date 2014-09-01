@@ -1,15 +1,12 @@
-#! /bin/sh /usr/share/dpatch/dpatch-run
-##
-## python-builds by <doko@debian.org>
-##
-## DP: Prepare upstream build system for building multiple python versions.
-## DP: Mostly, rename libsvn_swig_py to libsvn_swig_py2.x.
-## DP: Submitted upstream: http://svn.haxx.se/dev/archive-2008-05/0361.shtml
+Build for multiple python versions.  Patch from Matthias Klose
+<doko@debian.org> via Ubuntu.  Mostly, rename libsvn_swig_py to
+libsvn_swig_py2.x.
 
-@DPATCH@
+Submitted upstream: http://svn.haxx.se/dev/archive-2008-05/0361.shtml
+
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -121,6 +121,7 @@
+@@ -133,6 +133,7 @@
  APACHE_LDFLAGS = @APACHE_LDFLAGS@
  
  SWIG = @SWIG@
@@ -19,7 +16,7 @@
  SWIG_PY_LINK = @SWIG_PY_LINK@
 --- a/build/ac-macros/swig.m4
 +++ b/build/ac-macros/swig.m4
-@@ -93,7 +93,8 @@
+@@ -109,7 +109,8 @@
      AC_CACHE_CHECK([for Python includes], [ac_cv_python_includes],[
        ac_cv_python_includes="`$PYTHON ${abs_srcdir}/build/get-py-info.py --includes`"
      ])
@@ -29,7 +26,7 @@
  
      if test "$ac_cv_python_includes" = "none"; then
        AC_MSG_WARN([python bindings cannot be built without distutils module])
-@@ -266,6 +267,7 @@
+@@ -289,6 +290,7 @@
        AC_MSG_RESULT([$SWIG_RB_TEST_VERBOSE])
    fi
    AC_SUBST(SWIG)
@@ -39,7 +36,7 @@
    AC_SUBST(SWIG_PY_LINK)
 --- a/build.conf
 +++ b/build.conf
-@@ -398,7 +398,7 @@
+@@ -428,7 +428,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = core.i
@@ -48,7 +45,7 @@
         libsvn_diff libsvn_subr apr
  description = Subversion core library bindings
  include-runtime = yes
-@@ -407,7 +407,7 @@
+@@ -437,7 +437,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_client.i
@@ -57,7 +54,7 @@
         libsvn_client libsvn_subr apr
  nonlibs = swig_core
  description = Subversion client library bindings
-@@ -416,7 +416,7 @@
+@@ -446,7 +446,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_delta.i
@@ -66,7 +63,7 @@
         libsvn_delta libsvn_subr apr
  nonlibs = swig_core
  description = Subversion delta library bindings
-@@ -425,7 +425,7 @@
+@@ -455,7 +455,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_diff.i
@@ -75,7 +72,7 @@
         libsvn_diff libsvn_subr apr
  nonlibs = swig_core
  description = Subversion diff library bindings
-@@ -434,7 +434,7 @@
+@@ -464,7 +464,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_fs.i
@@ -84,7 +81,7 @@
         libsvn_fs libsvn_subr apr
  nonlibs = swig_core
  description = Subversion FS library bindings
-@@ -443,7 +443,7 @@
+@@ -473,7 +473,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_ra.i
@@ -93,7 +90,7 @@
         libsvn_ra libsvn_subr apr
  nonlibs = swig_core
  description = Subversion RA library bindings
-@@ -452,7 +452,7 @@
+@@ -482,7 +482,7 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_repos.i
@@ -102,7 +99,7 @@
         libsvn_repos libsvn_subr apr
  nonlibs = swig_core
  description = Subversion repository library bindings
-@@ -461,13 +461,13 @@
+@@ -491,13 +491,13 @@
  type = swig
  path = subversion/bindings/swig
  sources = svn_wc.i

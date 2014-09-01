@@ -1,7 +1,26 @@
+# ====================================================================
+#    Licensed to the Apache Software Foundation (ASF) under one
+#    or more contributor license agreements.  See the NOTICE file
+#    distributed with this work for additional information
+#    regarding copyright ownership.  The ASF licenses this file
+#    to you under the Apache License, Version 2.0 (the
+#    "License"); you may not use this file except in compliance
+#    with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing,
+#    software distributed under the License is distributed on an
+#    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+#    KIND, either express or implied.  See the License for the
+#    specific language governing permissions and limitations
+#    under the License.
+# ====================================================================
+
 require "my-assertions"
 require "util"
 require "time"
-require "md5"
+require "digest/md5"
 
 require "svn/core"
 require "svn/fs"
@@ -30,14 +49,15 @@ class SvnFsTest < Test::Unit::TestCase
 
     assert(!File.exist?(path))
     fs = nil
-    callback = Proc.new do |fs|
+    callback = Proc.new do |t_fs|
       assert(File.exist?(path))
       assert_equal(fs_type, Svn::Fs.type(path))
-      fs.set_warning_func do |err|
+      t_fs.set_warning_func do |err|
         p err
         abort
       end
-      assert_equal(path, fs.path)
+      assert_equal(path, t_fs.path)
+      fs = t_fs
     end
     yield(:create, [path, config], callback)
 
@@ -143,7 +163,7 @@ class SvnFsTest < Test::Unit::TestCase
 
       assert_equal(src, @fs.root.file_contents(path_in_repos){|f| f.read})
       assert_equal(src.length, @fs.root.file_length(path_in_repos))
-      assert_equal(MD5.new(src).hexdigest,
+      assert_equal(Digest::MD5.hexdigest(src),
                    @fs.root.file_md5_checksum(path_in_repos))
 
       assert_equal([path_in_repos], @fs.root.paths_changed.keys)
@@ -345,7 +365,7 @@ class SvnFsTest < Test::Unit::TestCase
 
       File.open(path, "w") {|f| f.print(modified)}
       @fs.transaction do |txn|
-        checksum = MD5.new(normalize_line_break(result)).hexdigest
+        checksum = Digest::MD5.hexdigest(normalize_line_break(result))
         stream = txn.root.apply_text(path_in_repos, checksum)
         stream.write(normalize_line_break(result))
         stream.close
@@ -373,8 +393,8 @@ class SvnFsTest < Test::Unit::TestCase
 
       File.open(path, "w") {|f| f.print(modified)}
       @fs.transaction do |txn|
-        base_checksum = MD5.new(normalize_line_break(src)).hexdigest
-        checksum = MD5.new(normalize_line_break(result)).hexdigest
+        base_checksum = Digest::MD5.hexdigest(normalize_line_break(src))
+        checksum = Digest::MD5.hexdigest(normalize_line_break(result))
         handler = txn.root.apply_textdelta(path_in_repos,
                                            base_checksum, checksum)
         assert_raises(Svn::Error::ChecksumMismatch) do
@@ -424,7 +444,7 @@ class SvnFsTest < Test::Unit::TestCase
     fs_type = Svn::Fs::TYPE_FSFS
     config = {Svn::Fs::CONFIG_FS_TYPE => fs_type}
 
-    yield(:create, [path, config])
+    yield(:create, [path, config], Proc.new{})
 
     assert_nothing_raised do
       yield(:recover, [path], Proc.new{})

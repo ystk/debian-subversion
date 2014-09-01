@@ -20,10 +20,10 @@ SVN::Core - Core module of the subversion perl bindings
     sub something {
         # create a subpool of the current default pool
         my $pool = SVN::Pool->new_default_sub;
-	# some svn operations...
+        # some svn operations...
 
-	# $pool gets destroyed and the previous default pool
-	# is restored when $pool's lexical scope ends
+        # $pool gets destroyed and the previous default pool
+        # is restored when $pool's lexical scope ends
     }
 
     # svn_stream_t as native perl io handle
@@ -155,7 +155,7 @@ sub CLOSE
 {
     my $self = shift;
     *$self->{svn_stream}->close
-	if *$self->{svn_stream};
+        if *$self->{svn_stream};
     undef *$self->{svn_stream};
 }
 
@@ -170,7 +170,7 @@ sub GETC
 sub print
 {
     my $self = shift;
-    $self->WRITE ($_[0], length ($_[0]));
+    $self->WRITE($_[0], length($_[0]));
 }
 
 sub PRINT
@@ -178,7 +178,7 @@ sub PRINT
     my $self = shift;
     if (defined $\) {
         if (defined $,) {
-	    $self->print(join($,, @_).$\);
+            $self->print(join($,, @_).$\);
         } else {
             $self->print(join("",@_).$\);
         }
@@ -201,8 +201,8 @@ sub PRINTF
 sub getline
 {
     my $self = shift;
-    *$self->{pool} ||= SVN::Core::pool_create (undef);
-    my ($buf, $eof) = *$self->{svn_stream}->readline ($/, *$self->{pool});
+    *$self->{pool} ||= SVN::Core::pool_create(undef);
+    my ($buf, $eof) = *$self->{svn_stream}->readline($/, *$self->{pool});
     return undef if $eof && !length($buf);
     return $eof ? $buf : $buf.$/;
 }
@@ -220,16 +220,16 @@ sub READLINE
 {
     my $self = shift;
     unless (defined $/) {
-	my $buf = '';
-	while (length( my $chunk = *$self->{svn_stream}->read
-	       ($SVN::Core::STREAM_CHUNK_SIZE)) ) {
-	    $buf .= $chunk;
-	}
-	return $buf;
+        my $buf = '';
+        while (length( my $chunk = *$self->{svn_stream}->read
+               ($SVN::Core::STREAM_CHUNK_SIZE)) ) {
+            $buf .= $chunk;
+        }
+        return $buf;
     }
     elsif (ref $/) {
-        my $buf = *$self->{svn_stream}->read (${$/});
-	return length($buf) ? $buf : undef;
+        my $buf = *$self->{svn_stream}->read(${$/});
+        return length($buf) ? $buf : undef;
     }
     return wantarray ? $self->getlines : $self->getline;
 }
@@ -238,9 +238,9 @@ sub READ {
     my $self = shift;
     my $len = $_[1];
     if (@_ > 2) { # read offset
-        substr($_[0],$_[2]) = *$self->{svn_stream}->read ($len);
+        substr($_[0],$_[2]) = *$self->{svn_stream}->read($len);
     } else {
-        $_[0] = *$self->{svn_stream}->read ($len);
+        $_[0] = *$self->{svn_stream}->read($len);
     }
     return $len;
 }
@@ -263,7 +263,7 @@ sub WRITE {
             my $rem = $slen - $off;
             $len = $rem if $rem < $len;
         }
-	*$self->{svn_stream}->write (substr ($_[0], $off, $len));
+        *$self->{svn_stream}->write(substr($_[0], $off, $len));
     }
     return $len;
 }
@@ -285,7 +285,7 @@ my %WRAPPED;
 
 sub default {
     my ($pool) = @_;
-    my $pobj = SVN::Pool->_wrap ($$pool);
+    my $pobj = SVN::Pool->_wrap($$pool);
     $WRAPPED{$pool} = $pobj;
     $pobj->default;
 }
@@ -315,11 +315,11 @@ also use $pool-E<gt>default to make it the default pool in the scope.
 
 =over 4
 
-=item new ([$parent])
+=item new([$parent])
 
 Create a new pool. The pool is a root pool if $parent is not supplied.
 
-=item new_default ([$parent])
+=item new_default([$parent])
 
 Create a new pool. The pool is a root pool if $parent is not supplied.
 Set the new pool as default pool.
@@ -355,14 +355,14 @@ my @POOLSTACK;
 
 sub new {
     my ($class, $parent) = @_;
-    $parent = $$parent if ref ($parent) eq 'SVN::Pool';
-    my $self = bless \create ($parent), $class;
+    $parent = $$parent if ref($parent) eq 'SVN::Pool';
+    my $self = bless \create($parent), $class;
     return $self;
 }
 
 sub new_default_sub {
-    my $parent = ref ($_[0]) ? ${+shift} : $SVN::_Core::current_pool;
-    my $self = SVN::Pool->new_default ($parent);
+    my $parent = ref($_[0]) ? ${+shift} : $SVN::_Core::current_pool;
+    my $self = SVN::Pool->new_default($parent);
     return $self;
 }
 
@@ -375,13 +375,13 @@ sub new_default {
 sub default {
     my $self = shift;
     push @POOLSTACK, $SVN::_Core::current_pool
-	unless $$SVN::_Core::current_pool == 0;
+        unless $$SVN::_Core::current_pool == 0;
     $SVN::_Core::current_pool = $$self;
 }
 
 sub clear {
     my $self = shift;
-    apr_pool_clear ($$self);
+    apr_pool_clear($$self);
 }
 
 my $globaldestroy;
@@ -419,7 +419,7 @@ sub DESTROY {
         delete $WRAPPOOL{$self};
     }
     else {
-        apr_pool_destroy ($$self)
+        apr_pool_destroy($$self)
     }
 }
 
@@ -427,28 +427,28 @@ package _p_svn_error_t;
 use SVN::Base qw(Core svn_error_t_);
 
 sub strerror {
-	return SVN::Error::strerror($_[$[]->apr_err());
+    return SVN::Error::strerror($_[$[]->apr_err());
 }
 
 sub handle_error {
-	return SVN::Error::handle_error(@_);
+    return SVN::Error::handle_error(@_);
 }
 
 sub expanded_message {
-	return SVN::Error::expanded_message(@_);
+    return SVN::Error::expanded_message(@_);
 }
 
 sub handle_warning {
-	# need to swap parameter order.
-	return SVN::Error::handle_warning($_[$[+1],$_[$[]);
+    # need to swap parameter order.
+    return SVN::Error::handle_warning($_[$[+1],$_[$[]);
 }
 
 foreach my $function (qw(compose clear quick_wrap)) {
     no strict 'refs';
     my $real_function = \&{"SVN::_Core::svn_error_$function"};
     *{"_p_svn_error_t::$function"} = sub {
-			  return $real_function->(@_);
-		}
+        return $real_function->(@_);
+    }
 }
 
 package SVN::Error;
@@ -457,8 +457,8 @@ use SVN::Base qw(Core SVN_ERR_);
 use Carp;
 our @CARP_NOT = qw(SVN::Base SVN::Client SVN::Core SVN::Delta
                    SVN::Delta::Editor SVN::Error SVN::Fs SVN::Node
-									 SVN::Pool SVN::Ra SVN::Ra::Callbacks SVN::Ra::Reporter
-									 SVN::Repos SVN::Stream SVN::TxDelta SVN::Wc);
+                   SVN::Pool SVN::Ra SVN::Ra::Callbacks SVN::Ra::Reporter
+                   SVN::Repos SVN::Stream SVN::TxDelta SVN::Wc);
 
 =head2 svn_error_t - SVN::Error
 
@@ -560,9 +560,9 @@ our $handler = \&croak_on_error;
 foreach my $function (qw(handle_error handle_warning strerror)) {
     no strict 'refs';
     my $real_function = \&{"SVN::_Core::svn_$function"};
-	  *{"SVN::Error::$function"} = sub {
-	      return $real_function->(@_);
-		}
+    *{"SVN::Error::$function"} = sub {
+        return $real_function->(@_);
+    }
 }
 
 =item SVN::Error::expanded_message($svn_error_t) or $svn_error_t-E<gt>expanded_message()
@@ -574,17 +574,18 @@ exception handlers get their error messages.
 =cut
 
 sub expanded_message {
-	  my $svn_error = shift;
+    my $svn_error = shift;
     unless (is_error($svn_error)) {
-	      return undef;
-		}
+        return undef;
+    }
 
-		my $error_message = $svn_error->strerror();
-		while ($svn_error) {
-		    $error_message .= ': ' . $svn_error->message();
-				$svn_error = $svn_error->child();
-		}
-		return $error_message;
+    my $error_message = $svn_error->strerror();
+    while ($svn_error) {
+        my $msg = $svn_error->message();
+        $error_message .= ": $msg" if $msg;
+        $svn_error = $svn_error->child();
+    }
+    return $error_message;
 }
 
 
@@ -597,7 +598,7 @@ an error.
 =cut
 
 sub is_error {
-		 return (ref($_[$[]) eq '_p_svn_error_t');
+     return (ref($_[$[]) eq '_p_svn_error_t');
 }
 
 =item SVN::Error::croak_on_error
@@ -620,16 +621,16 @@ unchanged.
 =cut
 
 sub croak_on_error {
-		unless (is_error($_[$[])) {
-			return @_;
-		}
+    unless (is_error($_[$[])) {
+      return @_;
+    }
     my $svn_error = shift;
 
-		my $error_message = $svn_error->expanded_message();
+    my $error_message = $svn_error->expanded_message();
 
-		$svn_error->clear();
+    $svn_error->clear();
 
-		croak($error_message);
+    croak($error_message);
 }
 
 =item SVN::Error::confess_on_error
@@ -641,16 +642,16 @@ This is useful when you are doing development work on the bindings themselves.
 =cut
 
 sub confess_on_error {
-		unless (is_error($_[$[])) {
-				return @_;
-		}
+    unless (is_error($_[$[])) {
+        return @_;
+    }
     my $svn_error = shift;
 
-		my $error_message = $svn_error->expanded_message();
+    my $error_message = $svn_error->expanded_message();
 
-		$svn_error->clear();
+    $svn_error->clear();
 
-		confess($error_message);
+    confess($error_message);
 }
 
 =item SVN::Error::ignore_error
@@ -665,11 +666,11 @@ clears it.  It then returns all the other parameters.
 
 sub ignore_error {
     if (is_error($_[$[])) {
-		    my $svn_error = shift;
-				$svn_error->clear();
-		}
+        my $svn_error = shift;
+        $svn_error->clear();
+    }
 
-		return @_;
+    return @_;
 }
 
 package _p_svn_log_changed_path_t;
@@ -697,6 +698,47 @@ no previous history.
 
 =cut
 
+package _p_svn_log_changed_path2_t;
+use SVN::Base qw(Core svn_log_changed_path2_t_);
+
+=head2 svn_log_changed_path2_t
+
+An object to represent a path that changed for a log entry.
+
+=over 4
+
+=item $lcp-E<gt>action()
+
+'A'dd, 'D'elete, 'R'eplace, 'M'odify
+
+=item $lcp-E<gt>copyfrom_path()
+
+Source path of copy, or C<undef> if there isn't any previous revision
+history.
+
+=item $lcp-E<gt>copyfrom_rev()
+
+Source revision of copy, or C<$SVN::Core::INVALID_REVNUM> if there is
+no previous history.
+
+=item $lcp-E<gt>node_kind()
+
+The type of the node, a C<$SVN::Node> enum; may be C<$SVN::Node::unknown>.
+
+=item $lcp-E<gt>text_modified()
+
+Is the text modified, a C<SVN::Tristate> enum, 
+may be C<$SVN::Tristate::unknown>.
+
+=item $lcp-E<gt>props_modified()
+
+Are properties modified, a C<SVN::Tristate> enum,
+may be C<$SVN::Tristate::unknown>.
+
+=back
+
+=cut
+
 package SVN::Node;
 use SVN::Base qw(Core svn_node_);
 
@@ -709,15 +751,131 @@ $SVN::Node::dir, $SVN::Node::unknown.
 
 =cut
 
+package SVN::Tristate;
+use SVN::Base qw(Core svn_tristate_);
+
+=head2 svn_tristate_t - SVN::Tristate
+
+An enum of the following constants:
+
+$SVN::Tristate::true, $SVN::Tristate::false, $SVN::Tristate::unknown
+
+Note that these true/false values have nothing to do with Perl's concept 
+of truth. In fact, each constant would evaluate to true in a boolean context.
+
+=cut
+
+package SVN::Depth;
+use SVN::Base qw(Core svn_depth_);
+
+=head2 svn_depth_t - SVN::Depth
+
+An enum of the following constants:
+
+=over 4
+
+=item $SVN::Depth::unknown
+
+Depth undetermined or ignored.  In some contexts, this means the client should
+choose an appropriate default depth.  The server will generally treat it as
+$SVN::Depth::infinity.
+
+=item $SVN::Depth::exclude
+
+Exclude (i.e., don't descend into) directory D.
+
+Note: In Subversion 1.5, $SVN::Depth::exclude is B<not> supported anyhwere in
+the client-side (Wc/Client/etc) code; it is only supported as an argument to
+set_path functions in the Ra and Repos reporters.  (This will enable future
+versions of Subversion to run updates, etc, against 1.5 servers with proper
+$SVN::Depth::exclude behavior, once we get a chance to implement client side
+support for $SVN::Depth::exclude).
+
+=item $SVN::Depth::empty
+
+Just the named directory D, no entries.
+
+Updates will not pull in any files or subdirectories not already present.
+
+=item $SVN::Depth::files
+
+D + its files children, but not subdirs.
+
+Updates will pull in any files not already present, but not subdirectories.
+
+=item $SVN::Depth::immediates
+
+D + immediate children (D and its entries).
+
+Updates will pull in any files or subdirectories not already present; those
+subdirectories' this_dir entries will have depth-empty.
+
+=item $SVN::Depth::infinity
+
+D + all descendants (full recursion from D).
+
+Updates will pull in any files or subdirectories not already present; those
+subdirectories' this_dir entries will have depth-infinity.  Equivalent to the
+pre 1.5 default update behavior.
+
+=back
+
+=cut
+
 package _p_svn_opt_revision_t;
 use SVN::Base qw(Core svn_opt_revision_t_);
 
 =head2 svn_opt_revision_t
 
+A revision, specified in one of C<SVN::Core::opt_revision_*> ways.
+
+=over 4
+
+=item $rev-E<gt>kind()
+
+An enum denoting how the revision C<$rev> was specified.  One of 
+C<$SVN::Core::opt_revision_unspecified>,
+C<$SVN::Core::opt_revision_number>,
+C<$SVN::Core::opt_revision_date>,
+C<$SVN::Core::opt_revision_committed>,
+C<$SVN::Core::opt_revision_previous>,
+C<$SVN::Core::opt_revision_base>,
+C<$SVN::Core::opt_revision_working>
+or C<$SVN::Core::opt_revision_head>.
+
+=item $rev-E<gt>value()
+
+Extra data about the revision. Only relevant if C<$rev-E<gt>kind> is
+C<$SVN::Core::opt_revision_number> (where it contains the revision number)
+or C<$SVN::Core::opt_revision_date> (where it contains a date).
+
+=back
+
 =cut
 
-package _p_svn_opt_revision_t_value;
-use SVN::Base qw(Core svn_opt_revision_t_value_);
+package _p_svn_opt_revision_value_t;
+use SVN::Base qw(Core svn_opt_revision_value_t_);
+
+package _p_svn_opt_revision_range_t;
+use SVN::Base qw(Core svn_opt_revision_range_t_);
+
+=head2 svn_opt_revision_range_t
+
+An object representing a range of revisions.
+
+=over 4
+
+=item $range-E<gt>start()
+
+The first revision in the range, a C<_p_svn_opt_revision_t> object.
+
+=item $range-E<gt>end()
+
+The last revision in the range, a C<_p_svn_opt_revision_t> object.
+
+=back
+
+=cut
 
 package _p_svn_config_t;
 use SVN::Base qw(Core svn_config_);
@@ -762,6 +920,73 @@ Time of created_rev (mod-time).
 Author of created rev.
 
 =back
+
+=cut
+
+package _p_svn_commit_info_t;
+use SVN::Base qw(Core svn_commit_info_t_);
+
+=head2 svn_commit_info_t
+
+=over 4
+
+=item $commit-E<gt>revision()
+
+Just committed revision.
+
+=item $commit-E<gt>date()
+
+Server-side date of the commit.
+
+=item $commit-E<gt>author()
+
+Author of the commit.
+
+=item $commit-E<gt>post_commit_err()
+
+Error message from the post-commit hook, or undef.
+
+=item $commit-E<gt>repos_root()
+
+Repository root, may be C<undef> if unknown.
+
+=back
+
+=cut
+
+package _p_svn_log_entry_t;
+use SVN::Base qw(Core svn_log_entry_t_);
+
+=head2 svn_log_entry_t
+
+=item $entry-E<gt>revision()
+
+The revision of the commit.
+
+=item $entry-E<gt>revprops()
+
+A reference to a hash of requested revision properties, 
+which may be C<undef> if it would contain no revprops. 
+
+=item $entry-E<gt>has_children()
+
+Whether or not this message has children.
+
+=item $entry-E<gt>changed_paths2()
+
+A reference to hash containing as keys every path committed in 
+C<$entry-E<gt>revision()>; the values are C<_p_svn_log_changed_path2_t>
+objects.
+
+=item $entry-E<gt>non_inheritable()
+
+Whether C<$entry-E<gt>revision()> should be interpreted as non-inheritable 
+in the same sense of C<_p_svn_merge_range_t>.
+
+=item $entry-E<gt>subtractive_merge()
+
+Whether C<$entry-E<gt>revision()> is a merged revision resulting 
+from a reverse merge.
 
 =cut
 
@@ -923,8 +1148,7 @@ Certificate authority is unknown (i.e. not trusted).
 
 =item $SVN::Auth::SSL::OTHER
 
-Other failure. This can happen if neon has introduced a new failure bit that we
-do not handle yet.
+Other failure. This can happen if some unknown error condition occurs.
 
 =back
 
@@ -992,17 +1216,22 @@ Chia-liang Kao E<lt>clkao@clkao.orgE<gt>
 
 =head1 COPYRIGHT
 
-Copyright (c) 2003 CollabNet.  All rights reserved.
+    Licensed to the Apache Software Foundation (ASF) under one
+    or more contributor license agreements.  See the NOTICE file
+    distributed with this work for additional information
+    regarding copyright ownership.  The ASF licenses this file
+    to you under the Apache License, Version 2.0 (the
+    "License"); you may not use this file except in compliance
+    with the License.  You may obtain a copy of the License at
 
-This software is licensed as described in the file COPYING, which you
-should have received as part of this distribution.  The terms are also
-available at http://subversion.tigris.org/license-1.html.  If newer
-versions of this license are posted there, you may use a newer version
-instead, at your option.
+      http://www.apache.org/licenses/LICENSE-2.0
 
-This software consists of voluntary contributions made by many
-individuals.  For exact contribution history, see the revision history
-and logs, available at http://subversion.tigris.org/.
+    Unless required by applicable law or agreed to in writing,
+    software distributed under the License is distributed on an
+    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    KIND, either express or implied.  See the License for the
+    specific language governing permissions and limitations
+    under the License.
 
 =cut
 

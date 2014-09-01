@@ -1,17 +1,10 @@
-#! /bin/sh /usr/share/dpatch/dpatch-run
-##
-## ruby-no-strict-aliasing by <peter@p12n.org>
-##
-## DP: Compile ruby bindings with -fno-strict-aliasing.
-## DP: It seems swig is generating _really_ bad code here, or something.
-## DP:
-## DP: Whatever it is, this line suppresses 1323 warnings, any of which might
-## DP: be real bugs with real consequences.
+It seems swig is generating _really_ bad code here, or something.
+Whatever it is, this line suppresses 1323 warnings, any of which might
+be real bugs with real consequences.
 
-@DPATCH@
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -126,7 +126,7 @@
+@@ -139,7 +139,7 @@
  SWIG_PY_LIBS = @SWIG_PY_LIBS@
  SWIG_PL_INCLUDES = @SWIG_PL_INCLUDES@
  SWIG_RB_INCLUDES = @SWIG_RB_INCLUDES@ -I$(SWIG_SRC_DIR)/ruby/libsvn_swig_ruby

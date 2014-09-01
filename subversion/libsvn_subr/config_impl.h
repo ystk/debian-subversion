@@ -2,17 +2,22 @@
  * config_impl.h :  private header for the config file implementation.
  *
  * ====================================================================
- * Copyright (c) 2000-2004 CollabNet.  All rights reserved.
+ *    Licensed to the Apache Software Foundation (ASF) under one
+ *    or more contributor license agreements.  See the NOTICE file
+ *    distributed with this work for additional information
+ *    regarding copyright ownership.  The ASF licenses this file
+ *    to you under the Apache License, Version 2.0 (the
+ *    "License"); you may not use this file except in compliance
+ *    with the License.  You may obtain a copy of the License at
  *
- * This software is licensed as described in the file COPYING, which
- * you should have received as part of this distribution.  The terms
- * are also available at http://subversion.tigris.org/license-1.html.
- * If newer versions of this license are posted there, you may use a
- * newer version instead, at your option.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software consists of voluntary contributions made by many
- * individuals.  For exact contribution history, see the revision
- * history and logs, available at http://subversion.tigris.org/.
+ *    Unless required by applicable law or agreed to in writing,
+ *    software distributed under the License is distributed on an
+ *    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *    KIND, either express or implied.  See the License for the
+ *    specific language governing permissions and limitations
+ *    under the License.
  * ====================================================================
  */
 
@@ -27,6 +32,7 @@
 #include <apr_hash.h>
 #include "svn_types.h"
 #include "svn_string.h"
+#include "svn_io.h"
 #include "svn_config.h"
 #include "svn_private_config.h"
 
@@ -58,6 +64,12 @@ struct svn_config_t
   /* Temporary value used for expanded default values in svn_config_get.
      (Using a stringbuf so that frequent resetting is efficient.) */
   svn_stringbuf_t *tmp_value;
+
+  /* Specifies whether section names are populated case sensitively. */
+  svn_boolean_t section_names_case_sensitive;
+
+  /* Specifies whether option names are populated case sensitively. */
+  svn_boolean_t option_names_case_sensitive;
 };
 
 
@@ -66,6 +78,12 @@ svn_error_t *svn_config__parse_file(svn_config_t *cfg,
                                     const char *file,
                                     svn_boolean_t must_exist,
                                     apr_pool_t *pool);
+
+/* Read sections and options from a stream. */
+svn_error_t *svn_config__parse_stream(svn_config_t *cfg,
+                                      svn_stream_t *stream,
+                                      apr_pool_t *result_pool,
+                                      apr_pool_t *scratch_pool);
 
 /* The name of the magic [DEFAULT] section. */
 #define SVN_CONFIG__DEFAULT_SECTION "DEFAULT"
@@ -109,7 +127,10 @@ svn_error_t *svn_config__parse_registry(svn_config_t *cfg,
    or svn_config_get_user_config_path() instead. */
 #ifdef WIN32
 #  define SVN_CONFIG__SUBDIRECTORY    "Subversion"
-#else  /* ! WIN32 */
+#elif defined __HAIKU__ /* HAIKU */
+#  define SVN_CONFIG__SYS_DIRECTORY   "subversion"
+#  define SVN_CONFIG__USR_DIRECTORY   "subversion"
+#else  /* ! WIN32 && ! __HAIKU__ */
 #  define SVN_CONFIG__SYS_DIRECTORY   "/etc/subversion"
 #  define SVN_CONFIG__USR_DIRECTORY   ".subversion"
 #endif /* WIN32 */
