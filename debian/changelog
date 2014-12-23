@@ -1,3 +1,11 @@
+subversion (1.6.12dfsg-7+deb6u1) squeeze-lts; urgency=medium
+
+  * Non-maintainer upload by the Squeeze LTS Team.
+  * Add patches/CVE-2014-3580 to fix mod_dav_svn DoS vulnerability with invalid
+    REPORT requests. (Closes: #773263)
+
+ -- Holger Levsen <holger@debian.org>  Sun, 21 Dec 2014 21:27:53 +0100
+
 subversion (1.6.12dfsg-7) squeeze-security; urgency=high
 
   * Non-maintainer upload by the Security Team.
