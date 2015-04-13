@@ -10,7 +10,7 @@ Build-Depends: debhelper (>= 8), libserf-dev (>= 1.2), zlib1g-dev,
                libsqlite3-dev (>= 3.7.12), libgnome-keyring-dev, libdbus-1-dev, kdelibs5-dev,
                quilt, doxygen, autotools-dev, autoconf, libtool, swig,
                python-all-dev, perl, libperl-dev, ruby, ruby-dev,
-               gcj-jdk (>= 4:4.4), junit
+               default-jdk, junit
 Build-Conflicts: libsvn-dev (<< 1.8~), ruby-test-unit
 Homepage: http://subversion.apache.org/
 Vcs-Svn: svn://anonscm.debian.org/pkg-subversion/src/1.8.x/
@@ -118,10 +118,10 @@ Description: Python bindings for Apache Subversion
 
 Package: subversion-tools
 Priority: extra
-Architecture: all
-Depends: subversion, ${misc:Depends}
-Breaks: subversion (<< 1.7)
-Replaces: subversion (<< 1.7)
+Architecture: any
+Depends: subversion, ${misc:Depends}, ${shlibs:Depends}
+Breaks: subversion (<< 1.8.10-3~)
+Replaces: subversion (<< 1.8.10-3~)
 Recommends: python-subversion, libsvn-perl,
             libconfig-inifiles-perl, liburi-perl,
             exim4 | mail-transport-agent, rsync, ${subversion-tools:Recommends}
@@ -138,6 +138,9 @@ Description: Assorted tools related to Apache Subversion
     .subversion/config file to an existing repository
   * svn_load_dirs: Sophisticated replacement for 'svn import'
   * svnwrap: Set umask to 002 before calling svn or svnserve
+  * fsfs-stats: Print FSFS repository stats
+  * fsfs-reorg: Optimize FSFS packing
+  * fsfs-access-map: Convert strace output into FSFS access map
   * several example hook scripts: commit-access-control, commit-email,
     log-police, mailer, svnperms, verify-po
  .

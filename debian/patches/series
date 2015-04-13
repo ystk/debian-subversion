@@ -1,5 +1,4 @@
 build-fixes
-java-build
 last-changed-date-charset
 no-extra-libs
 no-extra-libs-2
@@ -16,3 +15,10 @@ examples-compile-instructions
 apache_module_dependency
 workaround_EINVAL_on_kfreebsd
 ruby2.0-build-fixes
+test-failure-with-optimizations
+libtoolize
+CVE-2014-3580
+CVE-2014-8108
+CVE-2015-0251
+CVE-2015-0248
+CVE-2015-0202

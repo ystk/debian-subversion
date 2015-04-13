@@ -1,3 +1,53 @@
+subversion (1.8.10-6) unstable; urgency=high
+
+  * patches/CVE-2015-0202: Excessive memory use with certain REPORT requests
+    against mod_dav_svn with FSFS repositories
+  * patches/CVE-2015-0248: Assertion DoS vulnerability for certain mod_dav_svn
+    and svnserve requests with dynamically evaluated revision numbers
+  * patches/CVE-2015-0251: mod_dav_svn allows spoofing svn:author property
+    values for new revisions
+
+ -- James McCoy <jamessan@debian.org>  Tue, 31 Mar 2015 22:51:18 -0400
+
+subversion (1.8.10-5) unstable; urgency=medium
+
+  * patches/CVE-2014-8108: mod_dav_svn DoS vulnerability with invalid virtual
+    transaction names  (Closes: #773315)
+  * patches/CVE-2014-3580: mod_dav_svn DoS vulnerability with invalid REPORT
+    requests (Closes: #773263)
+
+ -- James McCoy <jamessan@debian.org>  Wed, 17 Dec 2014 00:11:03 -0500
+
+subversion (1.8.10-4) unstable; urgency=medium
+
+  * control: Use "dh_install --list-missing" instead of --fail-missing to
+    avoid a FTBFS with parallel builds.  (Closes: #768903)
+
+ -- James McCoy <jamessan@debian.org>  Mon, 10 Nov 2014 22:19:02 -0500
+
+subversion (1.8.10-3) unstable; urgency=medium
+
+  * Add a NEWS item describing that 1.7.x and later do not support having a
+    working copy which spans multiple filesystems.  (Closes: #766285)
+  * rules: Needs more MAN3EXT so generated swig-pl Makefile never installs
+    files to debian/tmp with wrong extensions.
+  * Move some less frequently used tools to subversion-tools and include the
+    fsfs-* tools.  (Closes: #764689)
+  * Switch from specifying gcj as the Java implementation to default-jdk.
+    (Closes: #737527, #421400)
+    - Remove patches/java-build
+
+ -- James McCoy <jamessan@debian.org>  Sat, 25 Oct 2014 21:47:16 -0400
+
+subversion (1.8.10-2) unstable; urgency=medium
+
+  * Add patches/test-failure-with-optimizations from upstream to fix test
+    failures with certain build configurations.  (Closes: #757773)
+  * Add patches/libtoolize from upstream to support the Multi-Arch libtool
+    packaging.  (Closes: #761789)
+
+ -- James McCoy <jamessan@debian.org>  Wed, 24 Sep 2014 20:54:34 -0400
+
 subversion (1.8.10-1) unstable; urgency=medium
 
   * New upstream release.  Refresh patches.
