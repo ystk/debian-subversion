@@ -1,3 +1,20 @@
+subversion (1.6.12dfsg-7+deb6u2) squeeze-lts; urgency=high
+
+  * Add patches for following CVEs
+    - CVE-2013-1845: Remotely triggered memory exhaustion in mod_dav_svn
+      (Closes: #704940)
+    - CVE-2013-1846: Remotely triggered crash in mod_dav_svn
+    - CVE-2013-1847: Remotely triggered crash in mod_dav_svn
+    - CVE-2013-1849: Remotely triggered crash in mod_dav_svn
+    - CVE-2014-0032: mod_dav_svn crash when handling certain requests with
+      SVNListParentPath on  (Closes: #737815)
+    - CVE-2015-0248: Assertion DoS vulnerability for certain mod_dav_svn and
+      svnserve requests with dynamically evaluated revision numbers
+    - CVE-2015-0251: mod_dav_svn allows spoofing svn:author property values
+      for new revisions
+
+ -- James McCoy <jamessan@debian.org>  Mon, 20 Apr 2015 22:19:47 -0400
+
 subversion (1.6.12dfsg-7+deb6u1) squeeze-lts; urgency=medium
 
   * Non-maintainer upload by the Squeeze LTS Team.
