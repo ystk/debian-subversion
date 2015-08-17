@@ -1,3 +1,11 @@
+subversion (1.6.12dfsg-7+deb6u3) squeeze-lts; urgency=high
+
+  * Non-maintainer upload.
+  * CVE-2015-3187: svn_repos_trace_node_locations revelaed hidden path
+    information.
+
+ -- Santiago Ruano Rincón <santiagorr@riseup.net>  Fri, 14 Aug 2015 19:39:24 +0200
+
 subversion (1.6.12dfsg-7+deb6u2) squeeze-lts; urgency=high
 
   * Add patches for following CVEs
