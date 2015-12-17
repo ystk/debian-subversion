@@ -1,3 +1,12 @@
+subversion (1.8.10-6+deb8u2) jessie-security; urgency=high
+
+  * patches/r1708699-mod_auth_ntlm-kerb-fix: Fix regression interacting with
+    mod_auth_kerb/mod_auth_ntlm in due to CVE-2015-3814 patch.  (Closes:
+    #797216)
+  * patches/CVE-2015-5343: Heap overflow and out-of-bounds read in mod_dav_svn
+
+ -- James McCoy <jamessan@debian.org>  Tue, 15 Dec 2015 20:23:11 -0500
+
 subversion (1.8.10-6+deb8u1) jessie-security; urgency=high
 
   * Add (Build-)Depends on apache2 packages necessary for security fixes.

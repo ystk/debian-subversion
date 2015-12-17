@@ -1,0 +1,50 @@
+------------------------------------------------------------------------
+r1708699 | philip | 2015-10-14 17:51:39 -0400 (Wed, 14 Oct 2015) | 10 lines
+
+The fix for CVE-2015-3184 (Subversion) and CVE-2015-3185 (httpd) broke
+the use of 3rd party modules such as mod_auth_kerb and mod_auth_ntlm
+when mandatory authn was combined with mod_authz_svn.  The problem
+was httpd returned a 401 response without an Authentication header
+meaning the client was unable to authenticate.  By returning DECLINED
+we allow the authn module to generate a 401 with the correct headers.
+
+* subversion/mod_authz_svn/mod_authz_svn.c
+  (access_checker): Return DECLINED rather than HTTP_UNAUTHORIZED.
+
+
+Index: trunk/subversion/mod_authz_svn/mod_authz_svn.c
+===================================================================
+--- a/subversion/mod_authz_svn/mod_authz_svn.c	(revision 1708698)
++++ b/subversion/mod_authz_svn/mod_authz_svn.c	(revision 1708699)
+@@ -954,19 +954,21 @@
+ #if USE_FORCE_AUTHN
+       if (authn_configured) {
+           /* We have to check to see if authn is required because if so we must
+-           * return UNAUTHORIZED (401) rather than FORBIDDEN (403) since returning
++           * return DECLINED rather than FORBIDDEN (403) since returning
+            * the 403 leaks information about what paths may exist to
+-           * unauthenticated users.  We must set a note here in order
+-           * to use ap_some_authn_rquired() without triggering an infinite
+-           * loop since the call will trigger this function to be called again. */
++           * unauthenticated users.  Returning DECLINED means apache's request
++           * handling will continue until the authn module itself generates
++           * UNAUTHORIZED (401).
++
++           * We must set a note here in order to use
++           * ap_some_authn_rquired() without triggering an infinite
++           * loop since the call will trigger this function to be
++           * called again. */
+           apr_table_setn(r->notes, IN_SOME_AUTHN_NOTE, (const char*)1);
+           authn_required = ap_some_authn_required(r);
+           apr_table_unset(r->notes, IN_SOME_AUTHN_NOTE);
+           if (authn_required)
+-            {
+-              ap_note_auth_failure(r);
+-              return HTTP_UNAUTHORIZED;
+-            }
++            return DECLINED;
+       }
+ #else
+       if (!authn_required)
+
+------------------------------------------------------------------------
