@@ -1,3 +1,10 @@
+subversion (1.8.10-6+deb8u3) jessie; urgency=medium
+
+  * patches/r1701440-kwallet-segfault: Fix segfault when using kwallet to
+    store authentication information.  (Closes: #736879)
+
+ -- James McCoy <jamessan@debian.org>  Fri, 11 Mar 2016 20:25:57 -0500
+
 subversion (1.8.10-6+deb8u2) jessie-security; urgency=high
 
   * patches/r1708699-mod_auth_ntlm-kerb-fix: Fix regression interacting with

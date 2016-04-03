@@ -26,3 +26,4 @@ CVE-2015-3817
 CVE-2015-3814
 r1708699-mod_auth_ntlm-kerb-fix
 CVE-2015-5343
+r1701440-kwallet-segfault
