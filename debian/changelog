@@ -1,3 +1,12 @@
+subversion (1.8.10-6+deb8u4) jessie-security; urgency=high
+
+  + patches/CVE-2016-2167: svnserve/sasl may authenticate users using the
+    wrong realm
+  + patches/CVE-2016-2168: Remotely triggerable DoS vulnerability in
+    mod_authz_svn during COPY/MOVE authorization check
+
+ -- James McCoy <jamessan@debian.org>  Wed, 27 Apr 2016 20:00:25 -0400
+
 subversion (1.8.10-6+deb8u3) jessie; urgency=medium
 
   * patches/r1701440-kwallet-segfault: Fix segfault when using kwallet to
