@@ -1,3 +1,11 @@
+subversion (1.8.10-6+deb8u5) jessie-security; urgency=high
+
+  * patches/CVE-2016-8734: Unrestricted XML entity expansion in HTTP clients
+  * patches/CVE-2017-9800: Arbitrary code execution on clients through
+    malicious svn+ssh URLs in svn:externals and svn:sync-from-url
+
+ -- James McCoy <jamessan@debian.org>  Wed, 09 Aug 2017 21:08:28 -0400
+
 subversion (1.8.10-6+deb8u4) jessie-security; urgency=high
 
   + patches/CVE-2016-2167: svnserve/sasl may authenticate users using the

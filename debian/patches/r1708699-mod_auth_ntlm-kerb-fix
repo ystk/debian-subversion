@@ -16,7 +16,7 @@ Index: trunk/subversion/mod_authz_svn/mod_authz_svn.c
 ===================================================================
 --- a/subversion/mod_authz_svn/mod_authz_svn.c	(revision 1708698)
 +++ b/subversion/mod_authz_svn/mod_authz_svn.c	(revision 1708699)
-@@ -954,19 +954,21 @@
+@@ -952,19 +952,21 @@
  #if USE_FORCE_AUTHN
        if (authn_configured) {
            /* We have to check to see if authn is required because if so we must
@@ -45,6 +45,6 @@ Index: trunk/subversion/mod_authz_svn/mod_authz_svn.c
 +            return DECLINED;
        }
  #else
-       if (!authn_required)
+       if (!ap_some_auth_required(r))
 
 ------------------------------------------------------------------------
