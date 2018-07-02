@@ -1,0 +1,244 @@
+------------------------------------------------------------------------
+r1668618 | philip | 2015-03-23 08:33:22 -0400 (Mon, 23 Mar 2015) | 6 lines
+
+* subversion/bindings/swig/include/svn_types.swg: Change the
+   SWIG Perl binding code that was marked "clearly buggy" so
+   that svn_swig_pl_from_md5 follows the same pattern as
+   svn_swig_pl_from_stream.  This may fix a SEGV reported
+   via Debian: https://bugs.debian.org/780246
+
+
+Index: trunk/subversion/bindings/swig/include/svn_types.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1668617)
++++ trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1668618)
+@@ -1116,11 +1116,7 @@
+ }
+ 
+ %typemap(argout) unsigned char *result_digest {
+-  /* FIXME: This code is clearly buggy. The return value of sv_newmortal()
+-     is immediately overwritten by the return value
+-     of svn_swig_pl_from_md5(). */
+-    ST(argvi) = sv_newmortal();
+-    ST(argvi++) = svn_swig_pl_from_md5($1);
++    %append_output(svn_swig_pl_from_md5($1));
+ }
+ #endif
+ 
+
+------------------------------------------------------------------------
+r1671388 | rschupp | 2015-04-05 08:48:45 -0400 (Sun, 05 Apr 2015) | 6 lines
+
+* subversion/bindings/swig/include/svn_types.swg: Following r1668618
+   fix two more instances where the Perl argument stack pointer 
+   was bumped without checking if there's enough space allocated.
+   While we're at it, reduce the size of the temp array - 30 bytes
+   are more than enough to hold a decimal representation of a 64-bit integer.
+
+
+Index: trunk/subversion/bindings/swig/include/apr.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/apr.swg	(revision 1671387)
++++ trunk/subversion/bindings/swig/include/apr.swg	(revision 1671388)
+@@ -31,23 +31,21 @@
+ */
+ #ifdef SWIGPERL
+ %typemap(out) long long {
+-    char temp[256];
++    char temp[30];
+     sprintf(temp, "%" APR_INT64_T_FMT, (apr_int64_t) $1);
+-    ST(argvi) = sv_newmortal();
+-    sv_setpv((SV*)ST(argvi++), temp);
++    %append_output(sv_2mortal(newSVpv(temp, 0)));
+ }
+ 
+ %typemap(out) unsigned long long {
+-    char temp[256];
++    char temp[30];
+     sprintf(temp, "%" APR_UINT64_T_FMT, (apr_uint64_t) $1);
+-    ST(argvi) = sv_newmortal();
+-    sv_setpv((SV*)ST(argvi++), temp);
++    %append_output(sv_2mortal(newSVpv(temp, 0)));
+ }
+ 
+ %typemap(in, numinputs=0) long long *OUTPUT (apr_int64_t temp)
+     "$1 = &temp;";
+ %typemap(argout) long long *OUTPUT {
+-  char temp[256];
++  char temp[30];
+   sprintf(temp, "%" APR_INT64_T_FMT, (apr_int64_t)*($1));
+   %append_output(sv_2mortal(newSVpv(temp, 0)));
+ }
+@@ -55,7 +53,7 @@
+ %typemap(in, numinputs=0) unsigned long long *OUTPUT (apr_uint64_t temp)
+     "$1 = &temp;";
+ %typemap(argout) unsigned long long *OUTPUT {
+-  char temp[256];
++  char temp[30];
+   sprintf(temp, "%" APR_UINT64_T_FMT, (apr_uint64_t)*($1));
+   %append_output(sv_2mortal(newSVpv(temp, 0)));
+ }
+
+------------------------------------------------------------------------
+r1683266 | rschupp | 2015-06-03 05:50:59 -0400 (Wed, 03 Jun 2015) | 8 lines
+
+* subversion/bindings/swig/include/svn_types.swg:
+  Bracket calls with PUTBACK/SPAGAIN to helper functions 
+  that call back into Perl:
+  - svn_swig_pl_make_stream
+  - svn_swig_pl_from_stream
+  - svn_swig_pl_from_md5
+  Note: calls in typemaps need only SPAGAIN.
+
+
+Index: trunk/subversion/bindings/swig/include/svn_types.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1683265)
++++ trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1683266)
+@@ -935,15 +935,24 @@
+ #ifdef SWIGPERL
+ %typemap(in) svn_stream_t * {
+     svn_swig_pl_make_stream (&$1, $input);
++    SPAGAIN;
+ }
+ 
+ %typemap(out) svn_stream_t * {
+-    $result = svn_swig_pl_from_stream ($1);
++    SV* tmp;
++    PUTBACK;
++    tmp = svn_swig_pl_from_stream ($1);
++    SPAGAIN;
++    $result = tmp;
+     argvi++;
+ }
+ 
+ %typemap(argout) svn_stream_t ** {
+-  %append_output(svn_swig_pl_from_stream(*$1));
++    SV *tmp;
++    PUTBACK;
++    tmp = svn_swig_pl_from_stream(*$1);
++    SPAGAIN;
++    %append_output(tmp);
+ }
+ #endif
+ 
+@@ -1116,7 +1125,11 @@
+ }
+ 
+ %typemap(argout) unsigned char *result_digest {
+-    %append_output(svn_swig_pl_from_md5($1));
++    SV *tmp;
++    PUTBACK;
++    tmp = svn_swig_pl_from_md5($1);
++    SPAGAIN;
++    %append_output(tmp);
+ }
+ #endif
+ 
+
+------------------------------------------------------------------------
+r1683267 | rschupp | 2015-06-03 05:56:16 -0400 (Wed, 03 Jun 2015) | 8 lines
+
+* subversion/bindings/swig/core.i, subversion/bindings/swig/svn_client.i,
+  subversion/bindings/swig/include/svn_containers.swg,
+  subversion/bindings/swig/include/svn_string.swg,
+  subversion/bindings/swig/include/svn_types.swg:
+  Bracket calls with PUTBACK/SPAGAIN to helper function svn_swig_pl_make_pool
+  as it calls back into Perl.
+  Note: calls in typemaps need only SPAGAIN.
+
+
+Index: trunk/subversion/bindings/swig/include/svn_string.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/svn_string.swg	(revision 1683266)
++++ trunk/subversion/bindings/swig/include/svn_string.swg	(revision 1683267)
+@@ -90,6 +90,7 @@
+ %typemap(in) svn_stringbuf_t * {
+     apr_size_t len;
+     char *buf;
++    apr_pool_t *pool;
+ 
+     if (!SvOK($input)) {
+         $1 = NULL;
+@@ -97,8 +98,9 @@
+         buf = SvPV($input, len);
+         /* Another case of ugly pool handling, this should use the current
+            default pool, or make a new one if it doesn't exist yet */
+-        $1 = svn_stringbuf_ncreate(buf,len,
+-                                   svn_swig_pl_make_pool ((SV *)NULL));
++        pool = svn_swig_pl_make_pool ((SV *)NULL);
++        SPAGAIN;
++        $1 = svn_stringbuf_ncreate(buf,len, pool);
+     } else {
+         croak("Not a string");
+     }
+Index: trunk/subversion/bindings/swig/include/svn_containers.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/svn_containers.swg	(revision 1683266)
++++ trunk/subversion/bindings/swig/include/svn_containers.swg	(revision 1683267)
+@@ -269,8 +269,10 @@
+ %typemap(in) apr_hash_t *PROPHASH
+   (apr_pool_t *_global_pool = NULL)
+ {
+-  if (_global_pool == NULL)
++  if (_global_pool == NULL) {
+     _global_pool = svn_swig_pl_make_pool((SV *)NULL);
++    SPAGAIN;
++  }
+   $1 = svn_swig_pl_hash_to_prophash($input, _global_pool);  
+ }
+ %typemap(out) apr_hash_t *PROPHASH
+Index: trunk/subversion/bindings/swig/svn_client.i
+===================================================================
+--- trunk/subversion/bindings/swig/svn_client.i	(revision 1683266)
++++ trunk/subversion/bindings/swig/svn_client.i	(revision 1683267)
+@@ -293,8 +293,9 @@
+  */
+ #ifdef SWIGPERL
+ %typemap(in) apr_hash_t *config {
+-  $1 = svn_swig_pl_objs_to_hash_by_name ($input, "svn_config_t *",
+-                                         svn_swig_pl_make_pool ((SV *)NULL));
++  apr_pool_t *pool = svn_swig_pl_make_pool ((SV *)NULL);
++  SPAGAIN;
++  $1 = svn_swig_pl_objs_to_hash_by_name ($input, "svn_config_t *", pool);
+ }
+ 
+ %typemap(out) apr_hash_t *config {
+Index: trunk/subversion/bindings/swig/include/svn_types.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1683266)
++++ trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1683267)
+@@ -548,6 +548,7 @@
+ %typemap(in) apr_pool_t *pool "";
+ %typemap(default) apr_pool_t *pool(apr_pool_t *_global_pool) {
+     _global_pool = $1 = svn_swig_pl_make_pool (ST(items-1));
++    SPAGAIN;
+ }
+ #endif
+ #ifdef SWIGRUBY
+------------------------------------------------------------------------
+r1683269 | rschupp | 2015-06-03 05:59:38 -0400 (Wed, 03 Jun 2015) | 4 lines
+
+* subversion/bindings/swig/include/svn_types.swg:
+  Bracket calls with PUTBACK/SPAGAIN to helper function 
+  svn_swig_pl_callback_thunk as it calls back into Perl.
+
+
+Index: trunk/subversion/bindings/swig/include/svn_types.swg
+===================================================================
+--- trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1683268)
++++ trunk/subversion/bindings/swig/include/svn_types.swg	(revision 1683269)
+@@ -423,9 +423,11 @@
+         if (SvOK(exception_handler)) {
+             SV *callback_result;
+ 
++            PUTBACK;
+             svn_swig_pl_callback_thunk (CALL_SV, exception_handler,
+                                         &callback_result, "S", $1,
+                                         $1_descriptor);
++            SPAGAIN;
+         } else {
+             $result = SWIG_NewPointerObj($1, $1_descriptor, 0);
+             argvi++;
+
+------------------------------------------------------------------------
