@@ -1,0 +1,169 @@
+--- subversion.git.orig/subversion/tests/svn_test_main.c
++++ subversion.git/subversion/tests/svn_test_main.c
+@@ -84,6 +84,9 @@
+   server_minor_version_opt,
+   allow_segfault_opt,
+   srcdir_opt,
++  reposdir_opt,
++  reposurl_opt,
++  repostemplate_opt,
+   mode_filter_opt
+ };
+ 
+@@ -113,6 +116,12 @@
+                     N_("don't trap seg faults (useful for debugging)")},
+   {"srcdir",        srcdir_opt, 1,
+                     N_("source directory")},
++  {"repos-dir",     reposdir_opt, 1,
++                    N_("directory to create repositories in")},
++  {"repos-url",     reposurl_opt, 1,
++                    N_("the url to access reposdir as")},
++  {"repos-template",repostemplate_opt, 1,
++                    N_("the repository to use as template")},
+   {0,               0, 0, 0}
+ };
+ 
+@@ -371,7 +380,6 @@
+ int
+ main(int argc, const char *argv[])
+ {
+-  const char *prog_name;
+   int i;
+   svn_boolean_t got_error = FALSE;
+   apr_pool_t *pool, *test_pool;
+@@ -410,19 +418,8 @@
+   os->interleave = TRUE; /* Let options and arguments be interleaved */
+ 
+   /* Strip off any leading path components from the program name.  */
+-  prog_name = strrchr(argv[0], '/');
+-  if (prog_name)
+-    prog_name++;
+-  else
+-    {
+-      /* Just check if this is that weird platform that uses \ instead
+-         of / for the path separator. */
+-      prog_name = strrchr(argv[0], '\\');
+-      if (prog_name)
+-        prog_name++;
+-      else
+-        prog_name = argv[0];
+-    }
++  opts.prog_name = svn_dirent_internal_style(argv[0], pool);
++  opts.prog_name = svn_dirent_basename(opts.prog_name, NULL);
+ 
+ #ifdef WIN32
+ #if _MSC_VER >= 1400
+@@ -446,7 +443,7 @@
+ #endif
+ 
+   if (err)
+-    return svn_cmdline_handle_exit_error(err, pool, prog_name);
++    return svn_cmdline_handle_exit_error(err, pool, opts.prog_name);
+   while (1)
+     {
+       const char *opt_arg;
+@@ -465,7 +462,7 @@
+ 
+       switch (opt_id) {
+         case help_opt:
+-          help(prog_name, pool);
++          help(opts.prog_name, pool);
+           exit(0);
+         case cleanup_opt:
+           cleanup_mode = TRUE;
+@@ -480,6 +477,20 @@
+           SVN_INT_ERR(svn_utf_cstring_to_utf8(&opts.srcdir, opt_arg, pool));
+           opts.srcdir = svn_dirent_internal_style(opts.srcdir, pool);
+           break;
++        case reposdir_opt:
++          SVN_INT_ERR(svn_utf_cstring_to_utf8(&opts.repos_dir, opt_arg, pool));
++          opts.repos_dir = svn_dirent_internal_style(opts.repos_dir, pool);
++          break;
++        case reposurl_opt:
++          SVN_INT_ERR(svn_utf_cstring_to_utf8(&opts.repos_url, opt_arg, pool));
++          opts.repos_url = svn_uri_canonicalize(opts.repos_url, pool);
++          break;
++        case repostemplate_opt:
++          SVN_INT_ERR(svn_utf_cstring_to_utf8(&opts.repos_template, opt_arg,
++                                              pool));
++          opts.repos_template = svn_dirent_internal_style(opts.repos_template,
++                                                          pool);
++          break;
+         case list_opt:
+           list_mode = TRUE;
+           break;
+@@ -558,7 +569,7 @@
+                        "------  -----  ----------------\n";
+           for (i = 1; i <= array_size; i++)
+             {
+-              if (do_test_num(prog_name, i, TRUE, &opts, &header_msg,
++              if (do_test_num(opts.prog_name, i, TRUE, &opts, &header_msg,
+                               test_pool))
+                 got_error = TRUE;
+ 
+@@ -579,7 +590,7 @@
+                     continue;
+ 
+                   ran_a_test = TRUE;
+-                  if (do_test_num(prog_name, test_num, FALSE, &opts, NULL,
++                  if (do_test_num(opts.prog_name, test_num, FALSE, &opts, NULL,
+                                   test_pool))
+                     got_error = TRUE;
+ 
+@@ -596,7 +607,7 @@
+       /* just run all tests */
+       for (i = 1; i <= array_size; i++)
+         {
+-          if (do_test_num(prog_name, i, FALSE, &opts, NULL, test_pool))
++          if (do_test_num(opts.prog_name, i, FALSE, &opts, NULL, test_pool))
+             got_error = TRUE;
+ 
+           /* Clear the per-function pool */
+--- subversion.git.orig/subversion/tests/svn_test.h
++++ subversion.git/subversion/tests/svn_test.h
+@@ -99,12 +99,20 @@
+  */
+ typedef struct svn_test_opts_t
+ {
++  /* The name of the application (to generate unique names) */
++  const char *prog_name;
+   /* Description of the fs backend that should be used for testing. */
+   const char *fs_type;
+   /* Config file. */
+   const char *config_file;
+   /* Source dir. */
+   const char *srcdir;
++  /* Repository dir: temporary directory to create repositories in as subdir */
++  const char *repos_dir;
++  /* Repository url: The url to access REPOS_DIR as */
++  const char *repos_url;
++  /* Repository template: pre-created repository to copy for tests */
++  const char *repos_template;
+   /* Minor version to use for servers and FS backends, or zero to use
+      the current latest version. */
+   int server_minor_version;
+--- subversion.git.orig/build/run_tests.py
++++ subversion.git/build/run_tests.py
+@@ -359,6 +359,22 @@
+       print("Don't know what to do about " + progbase)
+       sys.exit(1)
+ 
++    if self.base_url is not None:
++      subdir = 'subversion/tests/cmdline/svn-test-work'
++
++      cmdline.append('--repos-url=%s' % self.base_url +
++                        '/svn-test-work/repositories')
++      cmdline.append('--repos-dir=%s'
++                     % os.path.abspath(
++                         os.path.join(self.builddir, subdir, 'repositories')))
++
++      # Enable access for http
++      if self.base_url.startswith('http'):
++        open(os.path.join(self.builddir, 'authz'), 'w').write(
++                '[/]\n' +
++                '* = rw\n')
++
++    # ### Support --repos-template
+     if self.verbose is not None:
+       cmdline.append('--verbose')
+     if self.cleanup is not None:

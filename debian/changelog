@@ -1,3 +1,12 @@
+subversion (1.8.10-6+deb8u7) jessie-security; urgency=high
+
+  * Non-maintainer upload by the LTS Team.
+  * patches/CVE-2018-11782_CVE-2019-0203: Remotely triggerable DoS
+    vulnerability in svnserve 'get-deleted-rev' and remote unauthenticated
+    denial-of-service in Subversion svnserve
+
+ -- Roberto C. Sanchez <roberto@debian.org>  Thu, 29 Aug 2019 14:56:57 -0400
+
 subversion (1.8.10-6+deb8u6) jessie; urgency=medium
 
   * Backport patches/perl-swig-crash from upstream to fix crashes with Perl

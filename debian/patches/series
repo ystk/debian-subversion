@@ -32,3 +32,5 @@ CVE-2016-2168
 CVE-2016-8734
 CVE-2017-9800
 perl-swig-crash
+additional-test-information
+CVE-2018-11782_CVE-2019-0203
