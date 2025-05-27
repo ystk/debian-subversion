@@ -114,6 +114,14 @@ svn_repos__replay_ev2(svn_fs_root_t *root,
                       apr_pool_t *scratch_pool);
 
 
+/* Validate that the given PATH is a valid pathname that can be stored in
+ * a Subversion repository, according to the name constraints used by the
+ * svn_repos_* layer.
+ */
+svn_error_t *
+svn_repos__validate_new_path(const char *path,
+                             apr_pool_t *scratch_pool);
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

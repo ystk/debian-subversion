@@ -2722,6 +2722,16 @@ open_stream(const dav_resource *resource,
 
   if (kind == svn_node_none) /* No existing file. */
     {
+      serr = svn_repos__validate_new_path(resource->info->repos_path,
+                                          resource->pool);
+
+      if (serr != NULL)
+        {
+          return dav_svn__convert_err(serr, HTTP_BAD_REQUEST,
+                                      "Request specifies an invalid path.",
+                                      resource->pool);
+        }
+
       serr = svn_fs_make_file(resource->info->root.root,
                               resource->info->repos_path,
                               resource->pool);
@@ -3815,6 +3825,14 @@ create_collection(dav_resource *resource)
         return err;
     }
 
+  if ((serr = svn_repos__validate_new_path(resource->info->repos_path,
+                                           resource->pool)) != NULL)
+    {
+      return dav_svn__convert_err(serr, HTTP_BAD_REQUEST,
+                                  "Request specifies an invalid path.",
+                                  resource->pool);
+    }
+
   if ((serr = svn_fs_make_dir(resource->info->root.root,
                               resource->info->repos_path,
                               resource->pool)) != NULL)
@@ -3889,23 +3907,34 @@ copy_resource(const dav_resource *src,
         return err;
     }
 
-  serr = svn_dirent_get_absolute(&src_repos_path,
-                                 svn_repos_path(src->info->repos->repos,
-                                                src->pool),
-                                 src->pool);
-  if (!serr)
-    serr = svn_dirent_get_absolute(&dst_repos_path,
-                                   svn_repos_path(dst->info->repos->repos,
-                                                  dst->pool),
-                                   dst->pool);
+  serr = svn_repos__validate_new_path(dst->info->repos_path, dst->pool);
+  if (serr)
+    return dav_svn__convert_err(serr, HTTP_BAD_REQUEST,
+                                "Request specifies an invalid path.",
+                                dst->pool);
+
+  src_repos_path = svn_repos_path(src->info->repos->repos, src->pool);
+  dst_repos_path = svn_repos_path(dst->info->repos->repos, dst->pool);
+
+  if (strcmp(src_repos_path, dst_repos_path) != 0)
+    {
+      /* Perhaps the source and dst repos use different path formats? */
+      serr = svn_error_compose_create(
+                svn_dirent_get_absolute(&src_repos_path, src_repos_path,
+                                        src->pool),
+                svn_dirent_get_absolute(&dst_repos_path, dst_repos_path,
+                                        dst->pool));
+
+      if (!serr && (strcmp(src_repos_path, dst_repos_path) != 0))
+          return dav_svn__new_error(
+                dst->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
+                "Copy source and destination are in different repositories");
+    }
+  else
+      serr = SVN_NO_ERROR;
 
   if (!serr)
     {
-      if (strcmp(src_repos_path, dst_repos_path) != 0)
-        return dav_svn__new_error_tag
-          (dst->pool, HTTP_INTERNAL_SERVER_ERROR, 0,
-           "Copy source and destination are in different repositories.",
-           SVN_DAV_ERROR_NAMESPACE, SVN_DAV_ERROR_TAG);
       serr = svn_fs_copy(src->info->root.root,  /* root object of src rev*/
                          src->info->repos_path, /* relative path of src */
                          dst->info->root.root,  /* root object of dst txn*/
@@ -4098,6 +4127,12 @@ move_resource(dav_resource *src,
                           0, 0, 0, NULL, NULL);
   if (err)
     return err;
+
+  serr = svn_repos__validate_new_path(dst->info->repos_path, dst->pool);
+  if (serr)
+    return dav_svn__convert_err(serr, HTTP_BAD_REQUEST,
+                                "Request specifies an invalid path.",
+                                dst->pool);
 
   /* Copy the src to the dst. */
   serr = svn_fs_copy(src->info->root.root,  /* the root object of src rev*/

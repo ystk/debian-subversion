@@ -1,3 +1,29 @@
+subversion (1.8.10-6+deb8u10) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS team.
+  * Fix a typo in repos.c which accidentally introduced a new symbol.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 26 May 2025 23:32:27 +0200
+
+subversion (1.8.10-6+deb8u9) jessie-security; urgency=medium
+
+  * Non-maintainer upload by the ELTS team.
+  * No-change rebuild against glib2.0 2.42.1-1+deb8u9.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 26 May 2025 15:34:44 +0200
+
+subversion (1.8.10-6+deb8u8) jessie-security; urgency=high
+
+  * Non-maintainer upload by the ELTS team.
+  * Fix CVE-2024-46901:
+    It has been discovered that the patch for CVE-2013-1968 was incomplete and
+    unintentionally left mod_dav_svn vulnerable to control characters in
+    filenames. If a path or a revision-property which contains control
+    characters is committed to a repository then SVN operations served by
+    mod_dav_svn can be disrupted.
+
+ -- Markus Koschany <apo@debian.org>  Wed, 07 May 2025 11:03:52 +0200
+
 subversion (1.8.10-6+deb8u7) jessie-security; urgency=high
 
   * Non-maintainer upload by the LTS Team.
